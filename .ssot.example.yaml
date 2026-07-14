@@ -1,0 +1,88 @@
+# .ssot.example.yaml — annotated manifest template.
+# Copy to .ssot.yaml at your repo root and edit. Each fact has ONE canonical
+# location; everything else is a copy. Patterns are regexes with EXACTLY ONE
+# capture group around the value. Paths use forward slashes on every platform.
+# Put regexes in single quotes so backslashes survive.
+
+# Globs excluded from globbed-copy expansion and from `discover` scans.
+ignore_paths:
+  - "**/CHANGELOG.md"
+  - "vendor/**"
+
+facts:
+  # A plain count. type: integer normalizes thousands separators and a trailing
+  # '+', so "1,234" == "1234" == "1234+".
+  - name: user-count
+    type: integer
+    note: >
+      Total active users. Canonical is the metrics README. Counting convention:
+      excludes trial accounts.
+    canonical:
+      file: docs/metrics.md
+      pattern: 'Active users:\s*([\d,]+)'
+    copies:
+      - file: marketing/landing.html
+        pattern: 'data-stat="users">([\d,]+)\+?<'
+      - file: README.md
+        pattern: '([\d,]+) users trust'
+
+  # A price. type: currency strips the symbol and separators; it does NOT expand
+  # magnitude suffixes — keep "$5k" as type: string if you use that style.
+  - name: pro-price
+    type: currency
+    canonical:
+      file: docs/pricing.md
+      pattern: 'Pro plan:\s*\$([\d,]+)'
+    copies:
+      - file: marketing/landing.html
+        pattern: '\$([\d,]+)\s?/\s?month'
+
+  # A release version. type: semver ignores a leading "v".
+  - name: release-version
+    type: semver
+    canonical:
+      file: docs/release.md
+      pattern: 'Current release:\s*v?([\d.]+)'
+    copies:
+      - file: README.md
+        pattern: 'version\s+v?([\d.]+)'
+
+  # A monotonic count with a rounded marketing copy. `rounding: floor-1000`
+  # floors the canonical to the nearest 1000 before an EXACT compare (not fuzzy).
+  # `monotonic: true` flags "canonical suspect" when a copy is higher.
+  - name: total-downloads
+    type: integer
+    monotonic: true
+    freshness:
+      owner: growth-team
+      max_age_days: 30
+    canonical:
+      file: docs/metrics.md
+      pattern: 'Total downloads:\s*([\d,]+)'
+    copies:
+      - file: README.md
+        pattern: '([\d,]+)\+ downloads'
+        rounding: floor-1000
+        note: auto-written by scripts/metrics.py, floored to the nearest 1,000.
+
+  # A cross-repo copy (path escapes the repo root). Read-only: with `check
+  # --fetch` it is compared against the sibling's remote ref via `git show`;
+  # the sibling tree is never modified.
+  - name: seat-price
+    type: currency
+    canonical:
+      file: docs/pricing.md
+      pattern: 'Per seat:\s*\$([\d,]+)'
+    copies:
+      - file: ../marketing-site/pricing.html
+        pattern: 'data-price-seat="\$?([\d,]+)"'
+
+  # A globbed copy path: every matching local file is checked with this pattern.
+  - name: support-email
+    type: string
+    canonical:
+      file: docs/support.md
+      pattern: 'Contact:\s*(\S+@\S+)'
+    copies:
+      - file: 'docs/guides/*.md'
+        pattern: 'email us at (\S+@\S+)'

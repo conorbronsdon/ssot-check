@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/conorbronsdon/ssot-check/schema/ssot.schema.json",
+  "title": ".ssot.yaml manifest",
+  "description": "Single-source-of-truth manifest: one canonical location per fact plus every hand-copied instance. The ssot-check CLI re-implements these checks in stdlib (validate subcommand); this schema is for editors and CI YAML-linting.",
+  "type": "object",
+  "required": ["facts"],
+  "additionalProperties": false,
+  "properties": {
+    "ignore_paths": {
+      "type": "array",
+      "description": "Glob patterns excluded from globbed copy expansion and from discover scans.",
+      "items": { "type": "string" }
+    },
+    "facts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/fact" }
+    }
+  },
+  "definitions": {
+    "fact": {
+      "type": "object",
+      "required": ["name", "canonical", "copies"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "description": "Short kebab-case identifier for the fact."
+        },
+        "note": {
+          "type": "string",
+          "description": "What the fact is, its update cadence, and counting conventions."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["string", "integer", "currency", "semver", "date"],
+          "default": "string",
+          "description": "Normalization applied before comparison. Default string is literal (whitespace + trailing '+' only)."
+        },
+        "monotonic": {
+          "type": "boolean",
+          "description": "If true and a copy is numerically higher than the canonical, drift is flagged 'canonical suspect' (a count that only grows means the higher value is probably fresher)."
+        },
+        "freshness": {
+          "type": "object",
+          "required": ["owner", "max_age_days"],
+          "additionalProperties": false,
+          "description": "Flag the canonical file when its git last-edit date is older than max_age_days.",
+          "properties": {
+            "owner": { "type": "string" },
+            "max_age_days": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "canonical": { "$ref": "#/definitions/locator" },
+        "copies": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/copy" }
+        }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "required": ["file", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Forward-slash path relative to repo root. May escape the root (../sibling) for a cross-repo, read-only location."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regex with exactly ONE capture group around the value."
+        }
+      }
+    },
+    "copy": {
+      "type": "object",
+      "required": ["file", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Copy location. May be a glob (docs/*.md) for local paths."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regex with exactly ONE capture group around the value."
+        },
+        "note": { "type": "string" },
+        "rounding": {
+          "type": "string",
+          "enum": ["floor-10", "floor-100", "floor-1000", "floor-1000-as-K"],
+          "description": "Deterministic transform applied to the canonical value before exact comparison, for copies a script intentionally rounds."
+        }
+      }
+    }
+  }
+}

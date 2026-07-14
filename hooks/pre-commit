@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# ssot-check pre-commit hook — audit single-source-of-truth drift before commit.
+#
+# Install:
+#   cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# or point core.hooksPath at this directory:
+#   git config core.hooksPath hooks
+#
+# Behavior:
+#   - Soft-fail by default: prints drift and lets the commit proceed (exit 0),
+#     so the hook never blocks work it can't auto-fix.
+#   - Hard-fail with SSOT_STRICT=1: a drift or manifest error aborts the commit.
+#
+# Exit codes from ssot_check.py: 0 in sync, 1 drift/staleness, 2 manifest error.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+MANIFEST="${SSOT_MANIFEST:-$REPO_ROOT/.ssot.yaml}"
+
+# Locate the CLI: prefer a repo-local copy, else rely on PATH.
+if [ -f "$REPO_ROOT/ssot_check.py" ]; then
+  CLI=(python3 "$REPO_ROOT/ssot_check.py")
+elif command -v ssot-check >/dev/null 2>&1; then
+  CLI=(ssot-check)
+else
+  echo "ssot-check: ssot_check.py not found; skipping drift check." >&2
+  exit 0
+fi
+
+# No manifest → nothing to check (a repo may not use ssot-check yet).
+if [ ! -f "$MANIFEST" ]; then
+  exit 0
+fi
+
+set +e
+"${CLI[@]}" check --manifest "$MANIFEST" --root "$REPO_ROOT"
+STATUS=$?
+set -e
+
+if [ "$STATUS" -eq 0 ]; then
+  exit 0
+fi
+
+if [ "${SSOT_STRICT:-0}" = "1" ]; then
+  echo "" >&2
+  echo "ssot-check: drift found and SSOT_STRICT=1 — commit aborted." >&2
+  echo "Fix the drift (or unset SSOT_STRICT to commit anyway)." >&2
+  exit 1
+fi
+
+echo "" >&2
+echo "ssot-check: drift found (soft-fail). Commit proceeding." >&2
+echo "Set SSOT_STRICT=1 to make this blocking." >&2
+exit 0

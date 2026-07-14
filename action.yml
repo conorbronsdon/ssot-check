@@ -1,0 +1,39 @@
+name: "ssot-check"
+description: "Audit single-source-of-truth drift: verify every hand-copied fact still matches its canonical value."
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  manifest:
+    description: "Path to the .ssot.yaml manifest."
+    required: false
+    default: ".ssot.yaml"
+  root:
+    description: "Repo root for resolving relative paths (default: manifest directory)."
+    required: false
+    default: "."
+  fetch:
+    description: "Compare cross-repo copies against their remote ref (read-only)."
+    required: false
+    default: "false"
+  json:
+    description: "Emit machine-readable JSON instead of the text report."
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    # Checkout is assumed to have run already in the calling workflow.
+    - name: Run ssot-check
+      shell: bash
+      run: |
+        CLI="${GITHUB_ACTION_PATH}/ssot_check.py"
+        ARGS=(check --manifest "${{ inputs.manifest }}" --root "${{ inputs.root }}")
+        if [ "${{ inputs.fetch }}" = "true" ]; then ARGS+=(--fetch); fi
+        if [ "${{ inputs.json }}" = "true" ]; then ARGS+=(--json); fi
+        echo "Running: python3 ssot_check.py ${ARGS[*]}"
+        python3 "$CLI" "${ARGS[@]}"
+        # ssot_check.py exits 1 on drift and 2 on manifest error; either fails
+        # the step (and the build) because bash propagates the exit code.
