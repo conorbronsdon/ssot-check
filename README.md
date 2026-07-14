@@ -2,6 +2,11 @@
 
 **Single-source-of-truth drift auditor for documentation-heavy repos.**
 
+<p align="center">
+  <img src="docs/demo.gif" width="820"
+       alt="Terminal demo: ssot-check reports IN SYNC for a price fact shared across two files (exit 0), then after the landing-page copy is edited to a different price it reports DRIFTED with exact locations pricing.md:3 versus landing.md:3 and exits 1." />
+</p>
+
 A deterministic, dependency-free CLI (plus a skill wrapper, a pre-commit hook,
 and a GitHub Action) that catches facts hand-copied across files and gone stale.
 
