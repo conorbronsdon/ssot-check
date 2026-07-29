@@ -232,6 +232,11 @@ jobs:
 python3 -m unittest discover tests   # stdlib only; no install step
 ```
 
+
+## Disclaimer
+
+*This is an independent personal project, not affiliated with, sponsored by, or endorsed by any company. All views expressed are my own.*
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
