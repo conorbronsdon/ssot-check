@@ -1214,9 +1214,14 @@ def build_parser():
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    # Default subcommand is `check`.
+    # Default subcommand is `check`. Global options (--version, -h/--help) are
+    # owned by the top-level parser and must not be swept into the default
+    # subcommand — doing so routed `--version` to `check`, which rejected it.
     known = {"check", "validate", "discover", "explain"}
-    if not argv or (argv[0] not in known and not argv[0].startswith("-")):
+    global_opts = {"-h", "--help", "--version"}
+    if argv and argv[0] in global_opts:
+        pass
+    elif not argv or (argv[0] not in known and not argv[0].startswith("-")):
         argv = ["check"] + argv
     elif argv and argv[0].startswith("-") and \
             not any(a in known for a in argv):
