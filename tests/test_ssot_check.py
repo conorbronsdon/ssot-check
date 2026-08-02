@@ -497,6 +497,20 @@ class CLIExitCodeTests(unittest.TestCase):
             rv = self._run(["validate"], tmp)
             self.assertEqual(rv.returncode, 0)
 
+    def test_global_options_reach_top_level_parser(self):
+        # Regression: the default-subcommand shim used to prepend `check` to
+        # `--version`/`-h`, routing them into the check subparser (exit 2).
+        with tempfile.TemporaryDirectory() as tmp:
+            rv = self._run(["--version"], tmp)
+            self.assertEqual(rv.returncode, 0, rv.stdout + rv.stderr)
+            self.assertIn("ssot-check", rv.stdout + rv.stderr)
+
+            for flag in ("-h", "--help"):
+                rh = self._run([flag], tmp)
+                self.assertEqual(rh.returncode, 0, rh.stdout + rh.stderr)
+                # top-level help lists the subcommands; check's help does not
+                self.assertIn("validate", rh.stdout)
+
     def test_config_error_exit_2(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = self._run(["check"], tmp)  # no manifest
