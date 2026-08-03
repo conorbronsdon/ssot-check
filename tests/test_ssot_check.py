@@ -417,6 +417,184 @@ class CrossRepoTests(unittest.TestCase):
             self.assertEqual(copy["status"], "in_sync")
 
 
+CROSS_REPO_MANIFEST = textwrap.dedent("""\
+    facts:
+      - name: price
+        type: integer
+        canonical:
+          file: index.md
+          pattern: 'Price: (\\d+)'
+        copies:
+          - file: ../sibling/page.html
+            pattern: 'data-price="(\\d+)"'
+    """)
+
+
+def git(cwd, *args):
+    """Run git in cwd, failing loudly. Test helper only."""
+    proc = subprocess.run(["git"] + list(args), cwd=cwd,
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"git {' '.join(args)} failed in {cwd}: {proc.stderr}")
+    return proc.stdout
+
+
+def has_git():
+    try:
+        subprocess.run(["git", "--version"], capture_output=True)
+        return True
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover
+        return False
+
+
+@unittest.skipUnless(has_git(), "git not available")
+class CrossRepoFetchTests(unittest.TestCase):
+    """`--fetch` is the tool's entire write surface, so its boundary is
+    asserted in both directions: no fetch happens without the flag, a fetch
+    does happen with it. A test that only checked one direction would pass if
+    the flag were wired to nothing, or if it fetched unconditionally."""
+
+    def _fixture(self, parent):
+        """repo/ + sibling/ where sibling's committed remote says 49 and its
+        working tree says 99. Returns (repo_path, sibling_path)."""
+        repo = os.path.join(parent, "repo")
+        write(os.path.join(repo, "index.md"), "Price: 49\n")
+
+        origin = os.path.join(parent, "origin.git")
+        os.makedirs(origin)
+        git(origin, "init", "--bare", "--initial-branch=main", "--quiet")
+
+        seed = os.path.join(parent, "seed")
+        git(parent, "clone", "--quiet", origin, "seed")
+        write(os.path.join(seed, "page.html"), 'data-price="49"\n')
+        git(seed, "add", "page.html")
+        git(seed, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "--quiet", "-m", "seed")
+        git(seed, "push", "--quiet", "origin", "main")
+
+        sib = os.path.join(parent, "sibling")
+        git(parent, "clone", "--quiet", origin, "sibling")
+        # Diverge the working tree from what the remote ref holds.
+        write(os.path.join(sib, "page.html"), 'data-price="99"\n')
+        return repo, sib
+
+    def _spy_git(self):
+        """Record every git invocation while still running it for real."""
+        calls = []
+        real_git = sc._git
+
+        def spy(args, cwd):
+            calls.append(list(args))
+            return real_git(args, cwd)
+        return calls, spy, real_git
+
+    def test_fetch_reads_remote_not_working_tree(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, _ = self._fixture(parent)
+            m = sc.parse_manifest(CROSS_REPO_MANIFEST)
+
+            # Default: the working tree, which drifted to 99.
+            local = sc.check(repo, m)["facts"][0]["copies"][0]
+            self.assertEqual(local["value"], "99")
+            self.assertEqual(local["status"], "drifted")
+            self.assertEqual(local["source"], "local")
+
+            # --fetch: the remote-tracking ref, still 49.
+            remote = sc.check(repo, m, fetch=True)["facts"][0]["copies"][0]
+            self.assertEqual(remote["value"], "49")
+            self.assertEqual(remote["status"], "in_sync")
+            self.assertIn("origin/main", remote["source"])
+            self.assertNotIn("fetch failed", remote["source"])
+
+    def test_no_fetch_without_the_flag(self):
+        """Must-not-fire: the default path touches nothing in the sibling."""
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = self._fixture(parent)
+            before = git(sib, "rev-parse", "origin/main").strip()
+            calls, spy, real_git = self._spy_git()
+            sc._git = spy
+            try:
+                sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST))
+            finally:
+                sc._git = real_git
+
+            for call in calls:
+                self.assertNotIn("fetch", call,
+                                 f"fetched without --fetch: git {call}")
+            self.assertEqual(git(sib, "rev-parse", "origin/main").strip(),
+                             before)
+            self.assertFalse(
+                os.path.exists(os.path.join(sib, ".git", "FETCH_HEAD")),
+                "FETCH_HEAD created without --fetch")
+
+    def test_fetch_runs_only_fetch_and_reads(self):
+        """Must-still-fire: --fetch does fetch, and the write surface stops
+        there — no pull/rebase/merge/checkout/reset, and the working tree and
+        HEAD are left exactly as they were."""
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = self._fixture(parent)
+            page = os.path.join(sib, "page.html")
+            head_before = git(sib, "rev-parse", "HEAD").strip()
+            with open(page, encoding="utf-8") as fh:
+                tree_before = fh.read()
+            calls, spy, real_git = self._spy_git()
+            sc._git = spy
+            try:
+                sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST),
+                         fetch=True)
+            finally:
+                sc._git = real_git
+
+            self.assertIn(["fetch", "--quiet"], calls,
+                          "--fetch was passed but no fetch ran")
+            for call in calls:
+                self.assertNotIn(call[0],
+                                 ("pull", "rebase", "merge", "checkout",
+                                  "reset", "push", "commit", "clean"),
+                                 f"unexpected write verb: git {call}")
+            # FETCH_HEAD is the expected, documented side effect.
+            self.assertTrue(
+                os.path.exists(os.path.join(sib, ".git", "FETCH_HEAD")),
+                "--fetch should have produced FETCH_HEAD")
+            # ...and nothing beyond it moved.
+            self.assertEqual(git(sib, "rev-parse", "HEAD").strip(), head_before)
+            with open(page, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), tree_before)
+
+    def test_unverified_when_sibling_has_no_remote_tracking_ref(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo = os.path.join(parent, "repo")
+            sib = os.path.join(parent, "sibling")
+            write(os.path.join(repo, "index.md"), "Price: 49\n")
+            write(os.path.join(sib, "page.html"), 'data-price="49"\n')
+            git(sib, "init", "--initial-branch=main", "--quiet")
+            git(sib, "add", "page.html")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "--quiet", "-m", "local only")
+
+            result = sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST),
+                              fetch=True)
+            copy = result["facts"][0]["copies"][0]
+            self.assertEqual(copy["status"], "unverified")
+            self.assertNotIn("value", copy)
+            self.assertIn("no remote-tracking ref", copy["note"])
+            self.assertEqual(result["exit_code"], 1)
+
+    def test_fetch_help_states_what_it_writes(self):
+        """The flag's help text is the label the scanner faulted. It has to
+        name the write, not just claim read-only."""
+        proc = subprocess.run([sys.executable, CLI, "check", "--help"],
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0)
+        help_text = " ".join(proc.stdout.split())
+        self.assertIn("--fetch", help_text)
+        self.assertIn("git fetch", help_text)
+        self.assertIn("FETCH_HEAD", help_text)
+        self.assertIn("never pulls", help_text)
+        self.assertNotIn("read-only", help_text)
+
+
 # --------------------------------------------------------------------------- #
 class FreshnessTests(unittest.TestCase):
     def test_skips_without_git(self):
