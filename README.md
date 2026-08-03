@@ -62,7 +62,7 @@ Common options (`check`, `validate`, `explain`):
 | `-f, --manifest PATH` | Manifest path (default `.ssot.yaml`). |
 | `--root DIR` | Repo root for relative paths (default: the manifest's directory). |
 | `--json` | Machine-readable output (`check`, `discover`, `explain`). |
-| `--fetch` | For cross-repo copies, `git fetch` and compare against the remote ref (read-only; never pulls). `check`/`explain`. |
+| `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`. |
 
 `discover` takes `--root DIR` (default `.`), repeatable `--ignore GLOB`, and
 `--json`. Running `ssot_check.py` with no subcommand defaults to `check`.
@@ -162,15 +162,36 @@ A local copy `file` may be a glob (`docs/guides/*.md`); every matching file is
 checked with the same pattern. Files matching `ignore_paths` are excluded.
 Globbing is not applied to cross-repo paths.
 
-### Cross-repo copies (read-only)
+### Cross-repo copies (never edited; `--fetch` is the one write)
 
 A copy — or the canonical — may live in a sibling clone via a path that escapes
 the repo root (`../marketing-site/pricing.html`) or an absolute path. These are
-**read-only**. By default the local sibling file is read. With `--fetch`, and if
-the sibling is a git repo, `ssot-check` runs `git fetch` and compares against the
-remote-tracking ref via `git show` — it **never** pulls, rebases, or modifies the
-sibling tree. Local divergence is reported, not fixed. If the sibling can't be
-read, the fact is reported **UNVERIFIED** rather than guessed.
+never edited. `ssot-check` reports drift in a sibling repo; it never fixes it.
+
+**By default**, the sibling's working-tree file is read and nothing in that repo
+is touched — no network call, no git command that writes.
+
+**With `--fetch`**, and if the sibling is a git repo, `ssot-check` runs
+`git fetch` there and compares against its remote-tracking ref
+(`branch@{upstream}`, else `origin/HEAD`) via `git show`. Be clear about the
+cost, because it is the tool's entire write surface:
+
+| `--fetch` does | `--fetch` does not |
+|---|---|
+| make a network call | pull, rebase, or merge |
+| update the sibling's remote-tracking refs, `FETCH_HEAD`, and object store | move its working tree, index, `HEAD`, or any local branch |
+| | write any file, anywhere |
+
+The report labels each cross-repo value with its ref and tip date — e.g.
+`remote origin/main @ 2026-07-28`. If the fetch itself fails (offline, auth, no
+remote), the value still comes from whatever refs were on disk and is labelled
+`fetch failed; local mirror may be stale`, so a stale mirror can't pass as a
+fresh one.
+
+Local divergence between the sibling's working tree and its remote-tracking ref
+is reported, not fixed. If the value can't be established — the file is
+unreadable, or the sibling has no remote-tracking ref — the fact is reported
+**UNVERIFIED** rather than guessed.
 
 ## YAML subset — what the parser supports
 
@@ -194,7 +215,8 @@ outside the subset.
 [`SKILL.md`](SKILL.md) is a thin, model-invocable [agent skill](https://code.claude.com/docs/en/skills)
 around the CLI. The CLI does the deterministic work; the skill adds judgment —
 helping a human curate a manifest from `discover` output and interpreting a
-`check` report. The CLI is read-only: it never edits docs or the manifest.
+`check` report. The CLI never edits docs or the manifest; the only state it can
+change is a sibling repo's remote-tracking refs, under `--fetch`.
 Writing `.ssot.yaml` and applying fixes are human-gated (propose, approve, then
 write). Drop the repo (or `SKILL.md` plus `ssot_check.py`) into `.claude/skills/`.
 

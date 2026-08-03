@@ -65,9 +65,11 @@ facts:
         rounding: floor-1000
         note: auto-written by scripts/metrics.py, floored to the nearest 1,000.
 
-  # A cross-repo copy (path escapes the repo root). Read-only: with `check
-  # --fetch` it is compared against the sibling's remote ref via `git show`;
-  # the sibling tree is never modified.
+  # A cross-repo copy (path escapes the repo root). By default the sibling's
+  # working tree is read and nothing in that repo is touched. With `check
+  # --fetch`, ssot-check runs `git fetch` there and compares against the
+  # remote-tracking ref: that updates the sibling's remote-tracking refs and
+  # FETCH_HEAD, but never pulls or modifies its working tree.
   - name: seat-price
     type: currency
     canonical:

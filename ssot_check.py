@@ -26,7 +26,7 @@ import subprocess
 import sys
 from datetime import date, datetime
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
@@ -540,7 +540,8 @@ def _read_file(path):
 
 
 # --------------------------------------------------------------------------- #
-# Cross-repo (read-only) sibling access
+# Cross-repo sibling access. Never edits a sibling; `--fetch` updates its
+# remote-tracking refs and nothing else.
 # --------------------------------------------------------------------------- #
 def _git(args, cwd):
     try:
@@ -559,33 +560,64 @@ def _sibling_repo_root(path):
     return top.strip() if top else None
 
 
+def _remote_tracking_ref(repo_root):
+    """Name of the sibling's remote-tracking ref, or None if it has none.
+
+    Tries the checked-out branch's upstream first, then `origin/HEAD`. Don't
+    assume the latter exists: `git clone` writes refs/remotes/origin/HEAD, but
+    `git remote add` + `git fetch` does not, and hardcoding it made a repo with
+    a perfectly good origin/main look unverifiable.
+    """
+    head = _git(["symbolic-ref", "--quiet", "--short", "HEAD"], repo_root)
+    if head:
+        up = _git(["rev-parse", "--abbrev-ref",
+                   f"{head.strip()}@{{upstream}}"], repo_root)
+        if up and up.strip():
+            return up.strip()
+    origin_head = _git(["symbolic-ref", "--quiet",
+                        "refs/remotes/origin/HEAD"], repo_root)
+    if origin_head and origin_head.strip():
+        return origin_head.strip().split("refs/remotes/")[-1]
+    return None
+
+
 def _read_cross_repo(abspath, fetch):
-    """Read a sibling file read-only. With fetch=True, compare against the
-    remote-tracking ref via `git show` after a `git fetch` (never a pull)."""
+    """Read a sibling file. Never modifies its working tree, index, or HEAD.
+
+    Default (fetch=False): read the sibling's working tree as it is on disk.
+    Nothing in the sibling repo is touched at all.
+
+    With fetch=True: run `git fetch` in the sibling, then read the file out of
+    its remote-tracking ref via `git show`. Be precise about what that costs —
+    `git fetch` makes a network call and updates that repo's remote-tracking
+    refs, FETCH_HEAD, and object store. It does not pull, rebase, merge, or
+    move the working tree, index, HEAD, or any local branch. That is the whole
+    of this tool's write surface, and it is opt-in.
+
+    Either way, if the value can't be established the fact is reported
+    UNVERIFIED rather than guessed.
+    """
     if not fetch:
         return _read_file(abspath), "local"
     repo_root = _sibling_repo_root(abspath)
     if not repo_root:
         return _read_file(abspath), "local (not a git repo)"
-    _git(["fetch", "--quiet"], repo_root)  # read-only; safe
-    ref = None
-    head = _git(["symbolic-ref", "--quiet", "--short", "HEAD"], repo_root)
-    if head:
-        branch = head.strip()
-        up = _git(["rev-parse", "--abbrev-ref",
-                   f"{branch}@{{upstream}}"], repo_root)
-        if up:
-            ref = up.strip()
+    # A failed fetch (offline, auth, no remote) leaves whatever was already on
+    # disk. Track it so a stale mirror can't be labelled as freshly fetched.
+    fetched = _git(["fetch", "--quiet"], repo_root) is not None
+    ref = _remote_tracking_ref(repo_root)
     if not ref:
-        origin_head = _git(["symbolic-ref", "--quiet",
-                            "refs/remotes/origin/HEAD"], repo_root)
-        ref = (origin_head.strip().split("refs/remotes/")[-1]
-               if origin_head else "origin/HEAD")
-    rel = os.path.relpath(abspath, repo_root)
+        return None, "unverified (sibling has no remote-tracking ref)"
+    if _git(["rev-parse", "--verify", "--quiet", ref], repo_root) is None:
+        return None, f"unverified ({ref} not present locally)"
+    rel = os.path.relpath(abspath, repo_root).replace(os.sep, "/")
     content = _git(["show", f"{ref}:{rel}"], repo_root)
     if content is None:
         return None, f"unverified (could not read {ref}:{rel})"
-    return content, f"remote {ref}"
+    tip = _git(["log", "-1", "--format=%cs", ref], repo_root)
+    asof = f" @ {tip.strip()}" if tip and tip.strip() else ""
+    stale = "" if fetched else " (fetch failed; local mirror may be stale)"
+    return content, f"remote {ref}{asof}{stale}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1168,6 +1200,16 @@ def cmd_explain(args):
     return 0
 
 
+def _add_fetch(sp):
+    sp.add_argument("--fetch", action="store_true",
+                    help="for cross-repo copies, run `git fetch` in the "
+                         "sibling repo and compare against its remote-tracking "
+                         "ref. This updates that repo's remote-tracking refs "
+                         "and FETCH_HEAD and makes a network call; it never "
+                         "pulls, rebases, or touches its working tree. Off by "
+                         "default")
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="ssot_check.py",
@@ -1186,9 +1228,7 @@ def build_parser():
     c = sub.add_parser("check", help="verify copies against canonicals")
     add_common(c)
     c.add_argument("--json", action="store_true", help="machine-readable output")
-    c.add_argument("--fetch", action="store_true",
-                   help="for cross-repo copies, git fetch and compare against "
-                        "the remote ref (read-only; never pulls)")
+    _add_fetch(c)
     c.set_defaults(func=cmd_check)
 
     v = sub.add_parser("validate", help="check manifest structure")
@@ -1206,7 +1246,7 @@ def build_parser():
     add_common(e)
     e.add_argument("name", help="fact name")
     e.add_argument("--json", action="store_true", help="machine-readable output")
-    e.add_argument("--fetch", action="store_true", help="see check --fetch")
+    _add_fetch(e)
     e.set_defaults(func=cmd_explain)
     return p
 

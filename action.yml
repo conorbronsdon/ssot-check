@@ -14,7 +14,11 @@ inputs:
     required: false
     default: "."
   fetch:
-    description: "Compare cross-repo copies against their remote ref (read-only)."
+    description: >-
+      For cross-repo copies, run `git fetch` in the sibling repo and compare
+      against its remote-tracking ref. Makes a network call and updates that
+      repo's remote-tracking refs and FETCH_HEAD; never pulls, rebases, or
+      touches its working tree.
     required: false
     default: "false"
   json:

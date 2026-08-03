@@ -16,9 +16,12 @@ The CLI does the deterministic work (regex extraction, comparison, exit codes).
 This skill adds the judgment: helping a human curate a manifest from `discover`
 output, and interpreting `check` results.
 
-**Invocation:** model-invocable. The CLI is **read-only** — it never edits docs
-or the manifest. Writing `.ssot.yaml` is human-gated: propose, wait for approval,
-then write. Content fixes for drift are proposed as diffs, never auto-applied.
+**Invocation:** model-invocable. The CLI never edits docs or the manifest, and
+never modifies any working tree — the audited repo's or a sibling's. Its one
+piece of state-changing behavior is the opt-in `--fetch`, which runs `git fetch`
+in a sibling clone; see Check Mode. Writing `.ssot.yaml` is human-gated: propose,
+wait for approval, then write. Content fixes for drift are proposed as diffs,
+never auto-applied.
 
 ## When to Use
 
@@ -43,7 +46,10 @@ then write. Content fixes for drift are proposed as diffs, never auto-applied.
 - `check` (or empty) → run `check` and interpret the report.
 - `explain <fact>` → run `explain` for one fact.
 
-Find the CLI at `${CLAUDE_SKILL_DIR}/ssot_check.py`. All commands are read-only.
+Find the CLI at `${CLAUDE_SKILL_DIR}/ssot_check.py`. No command writes a file
+anywhere, or modifies any working tree. The single exception to "reads only" is
+`check --fetch` / `explain --fetch`, which updates a sibling repo's
+remote-tracking refs; it is off unless you pass it.
 
 ## Discover Mode (proposing a manifest)
 
@@ -78,8 +84,13 @@ Find the CLI at `${CLAUDE_SKILL_DIR}/ssot_check.py`. All commands are read-only.
    python3 ${CLAUDE_SKILL_DIR}/ssot_check.py check
    ```
    Exit codes: `0` all in sync, `1` drift or staleness found, `2` manifest/config
-   error. Add `--json` for machine-readable output, `--fetch` to compare
-   cross-repo copies against their remote ref (read-only; never pulls).
+   error. Add `--json` for machine-readable output. Add `--fetch` to compare
+   cross-repo copies against the sibling's remote instead of its working tree —
+   this runs `git fetch` in that repo, so it makes a network call and updates
+   that repo's remote-tracking refs and `FETCH_HEAD`. It never pulls, rebases,
+   or touches the sibling's working tree, and it is off by default. Without it,
+   the sibling's working tree is read as-is. Either way, a value that can't be
+   established is reported UNVERIFIED, not guessed.
 2. **Interpret the report:**
    - **DRIFTED** — a copy no longer matches its canonical. Report the canonical
      value, the copy value, and `file:line`. A `(canonical suspect)` tag means the
@@ -91,11 +102,15 @@ Find the CLI at `${CLAUDE_SKILL_DIR}/ssot_check.py`. All commands are read-only.
      removed). Propose a manifest update.
    - **STALE CANONICAL (freshness)** — the canonical file hasn't been edited
      within `max_age_days`. Ping the owner.
-   - **UNVERIFIED** — a cross-repo copy couldn't be read. Report, don't guess.
+   - **UNVERIFIED** — a cross-repo copy couldn't be read (missing file, or
+     `--fetch` against a sibling with no remote-tracking ref). Report, don't
+     guess. A value labelled `fetch failed; local mirror may be stale` came
+     from refs already on disk because the fetch didn't succeed — treat its
+     age as unknown.
 3. **Propose fixes, one fact at a time, with the exact diff. Apply only after
    approval.** Drifted copies get content edits; CANONICAL MOVED / STALE ENTRY get
-   manifest edits. Cross-repo copies are **read-only** — flag the edit as landing
-   in the sibling repo with its own commit; never modify a sibling tree.
+   manifest edits. Never edit a sibling tree — flag the edit as landing in the
+   sibling repo with its own commit and deploy path.
 
 ## Design Principles
 
