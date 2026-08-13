@@ -1,11 +1,13 @@
 """Unit tests for ssot_check. Run: python3 -m unittest discover tests"""
 
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -475,6 +477,7 @@ class CrossRepoFetchTests(unittest.TestCase):
 
         sib = os.path.join(parent, "sibling")
         git(parent, "clone", "--quiet", origin, "sibling")
+        git(sib, "checkout", "--quiet", "-b", "old-feature")
         # Diverge the working tree from what the remote ref holds.
         write(os.path.join(sib, "page.html"), 'data-price="99"\n')
         return repo, sib
@@ -498,7 +501,10 @@ class CrossRepoFetchTests(unittest.TestCase):
             local = sc.check(repo, m)["facts"][0]["copies"][0]
             self.assertEqual(local["value"], "99")
             self.assertEqual(local["status"], "drifted")
-            self.assertEqual(local["source"], "local")
+            self.assertIn("local old-feature (", local["source"])
+            self.assertIn("non-default branch; default is origin/main",
+                          local["source"])
+            self.assertIn("dirty working tree", local["source"])
 
             # --fetch: the remote-tracking ref, still 49.
             remote = sc.check(repo, m, fetch=True)["facts"][0]["copies"][0]
@@ -506,6 +512,21 @@ class CrossRepoFetchTests(unittest.TestCase):
             self.assertEqual(remote["status"], "in_sync")
             self.assertIn("origin/main", remote["source"])
             self.assertNotIn("fetch failed", remote["source"])
+
+    def test_cross_repo_report_labels_local_ref_and_checkout_warnings(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, _ = self._fixture(parent)
+            result = sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST))
+
+            with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) \
+                    as output:
+                sc.render_check(result)
+
+            report = output.getvalue()
+            self.assertIn("source:    local old-feature (", report)
+            self.assertIn("WARNING: non-default branch; default is origin/main",
+                          report)
+            self.assertIn("dirty working tree", report)
 
     def test_no_fetch_without_the_flag(self):
         """Must-not-fire: the default path touches nothing in the sibling."""

@@ -169,7 +169,10 @@ the repo root (`../marketing-site/pricing.html`) or an absolute path. These are
 never edited. `ssot-check` reports drift in a sibling repo; it never fixes it.
 
 **By default**, the sibling's working-tree file is read and nothing in that repo
-is touched — no network call, no git command that writes.
+is touched — no network call, no git command that writes. The report identifies
+the checkout's branch and short SHA, and prints a warning when it is on a
+non-default branch or has uncommitted changes. This prevents a parked feature
+branch from masquerading as the state of the repository.
 
 **With `--fetch`**, and if the sibling is a git repo, `ssot-check` runs
 `git fetch` there and compares against its remote-tracking ref
