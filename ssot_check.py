@@ -581,6 +581,42 @@ def _remote_tracking_ref(repo_root):
     return None
 
 
+def _working_tree_source(abspath):
+    """Describe the exact sibling checkout used for a local cross-repo read.
+
+    Cross-repo checks deliberately read the working tree unless ``--fetch`` is
+    requested. Make that choice auditable: a parked feature branch or dirty
+    checkout must never be presented as an unlabeled statement about the repo.
+    """
+    repo_root = _sibling_repo_root(abspath)
+    if not repo_root:
+        return "local (not a git repo)"
+
+    branch_out = _git(["symbolic-ref", "--quiet", "--short", "HEAD"],
+                      repo_root)
+    branch = branch_out.strip() if branch_out and branch_out.strip() \
+        else "detached HEAD"
+    sha_out = _git(["rev-parse", "--short", "HEAD"], repo_root)
+    sha = sha_out.strip() if sha_out and sha_out.strip() else "unknown SHA"
+
+    warnings = []
+    origin_head = _git(["symbolic-ref", "--quiet",
+                        "refs/remotes/origin/HEAD"], repo_root)
+    if origin_head and origin_head.strip():
+        default_ref = origin_head.strip().split("refs/remotes/")[-1]
+        default_branch = default_ref.split("/", 1)[-1]
+        if branch != default_branch:
+            warnings.append(f"non-default branch; default is {default_ref}")
+
+    status = _git(["status", "--porcelain", "--untracked-files=normal"],
+                  repo_root)
+    if status and status.strip():
+        warnings.append("dirty working tree")
+
+    warning = f"; WARNING: {'; '.join(warnings)}" if warnings else ""
+    return f"local {branch} ({sha}{warning})"
+
+
 def _read_cross_repo(abspath, fetch):
     """Read a sibling file. Never modifies its working tree, index, or HEAD.
 
@@ -598,7 +634,7 @@ def _read_cross_repo(abspath, fetch):
     UNVERIFIED rather than guessed.
     """
     if not fetch:
-        return _read_file(abspath), "local"
+        return _read_file(abspath), _working_tree_source(abspath)
     repo_root = _sibling_repo_root(abspath)
     if not repo_root:
         return _read_file(abspath), "local (not a git repo)"
@@ -1005,6 +1041,8 @@ def render_check(result):
                 _print(f"      canonical: {f['canonical']['file']}:"
                        f"{f['canonical'].get('line')}")
                 _print(f"      copy:      {cp['file']}:{cp.get('line')}")
+                if cp.get("cross_repo"):
+                    _print(f"      source:    {cp.get('source')}")
                 if cp.get("note"):
                     _print(f"      note: {cp['note']}")
         _print("")
