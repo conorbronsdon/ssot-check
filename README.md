@@ -246,7 +246,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: conorbronsdon/ssot-check@v0.1.0
+      - uses: conorbronsdon/ssot-check@v0.1.2
         with:
           manifest: .ssot.yaml   # optional (default)
 ```
