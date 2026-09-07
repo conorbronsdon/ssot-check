@@ -262,6 +262,18 @@ python3 -m unittest discover tests   # stdlib only; no install step
 
 *This is an independent personal project, not affiliated with, sponsored by, or endorsed by any company. All views expressed are my own.*
 
+## Codex plugin packaging
+
+The repository root is also a Codex plugin: its manifest is
+[`.codex-plugin/plugin.json`](.codex-plugin/plugin.json), and `skills/`
+contains the discovery adapter. Keep the whole repository when installing the
+plugin; the adapter reads the canonical root `SKILL.md` and its bundled
+resources. Existing standalone skill installations still work.
+
+Run the skill against your target repository, not the plugin installation
+directory. Plugin installation does not install external tools or authorize
+changes to your files.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
