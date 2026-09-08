@@ -55,9 +55,12 @@ absolute paths. Use the requested manifest path if it differs from `.ssot.yaml`.
 1. Read an existing `.ssot.yaml` before proposing additions. Preserve its curated
    scope; do not replace it with discovery output. If there is no manifest, start
    with the user's requested surfaces.
-2. Run `python3 "$SKILL_DIR/ssot_check.py" discover --root "$TARGET_REPO"`.
-   It scans prose for repeated numbers, amounts, percentages, versions and
-   freshness wording. It writes no manifest.
+2. If the repo has a valid manifest, run
+   `python3 "$SKILL_DIR/ssot_check.py" discover --root "$TARGET_REPO" --manifest "$TARGET_REPO/.ssot.yaml" --untracked-only`
+   so already-curated occurrences are suppressed. Without a manifest, omit the
+   last two options. Discovery scans prose for repeated numbers, amounts,
+   percentages, versions and freshness wording. It is heuristic, writes
+   nothing, and exits `0`; use `check`, not discovery, as a deterministic gate.
 3. Curate the findings. Use the source named by the repo's contract or owner
    documentation, then inspect the actual source. A marketing copy is not
    canonical unless ownership was explicitly delegated to it. Do not treat

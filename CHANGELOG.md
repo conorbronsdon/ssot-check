@@ -6,8 +6,17 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+## [0.1.3] — 2026-09-08
+
 ### Added
 
+- Manifest-aware discovery via `discover --manifest PATH --untracked-only`,
+  which suppresses occurrences already represented by a curated manifest.
+- Advisory GitHub Actions annotations for uncovered discovery candidates, and
+  an opt-in `discover: warn` Action input. Heuristic discovery remains exit `0`;
+  deterministic `check` remains the build gate.
+- A repository `.ssot.yaml` and CI self-check so ssot-check verifies its own
+  release metadata and discovery coverage.
 - Agent-level pointer audit for disconnected setup guides, cross-repo ownership,
   stale worktrees and configuration-versus-access evidence. Includes a fictional
   broken-route case and a no-change control for independent behavioral evaluation.
@@ -18,6 +27,18 @@ All notable changes to ssot-check are documented here. The format follows
 - The skill now distinguishes audit-only requests from explicitly authorized
   fixes, preserving scope without asking again for an already-approved edit.
   CLI commands and their opt-in `--fetch` boundary are unchanged.
+
+### Fixed
+
+- CLI, Codex plugin, README Action example and changelog release versions now
+  agree. The published v0.1.2 tag is preserved rather than rewritten.
+
+## [0.1.2] — 2026-09-02
+
+### Added
+
+- Initial GitHub Actions Marketplace release of the dependency-free composite
+  Action, with manifest, root, fetch and JSON inputs.
 
 ## [0.1.1] — 2026-08-03
 
@@ -91,5 +112,7 @@ GitHub Action.
   detection, exit codes, discover heuristics) with fixtures.
 - `.github/workflows/test.yml` — CI running the suite on push and PR.
 
+[0.1.3]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.3
+[0.1.2]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.2
 [0.1.1]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.1
 [0.1.0]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.0

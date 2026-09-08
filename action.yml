@@ -25,6 +25,14 @@ inputs:
     description: "Emit machine-readable JSON instead of the text report."
     required: false
     default: "false"
+  discover:
+    description: >-
+      Optional manifest-aware discovery after a successful check. Set to
+      `warn` to annotate repeated facts and live-drift candidates that are not
+      covered by the manifest; `off` disables it. Discovery is heuristic and
+      never fails the step.
+    required: false
+    default: "off"
 
 runs:
   using: "composite"
@@ -32,12 +40,34 @@ runs:
     # Checkout is assumed to have run already in the calling workflow.
     - name: Run ssot-check
       shell: bash
+      env:
+        SSOT_INPUT_MANIFEST: ${{ inputs.manifest }}
+        SSOT_INPUT_ROOT: ${{ inputs.root }}
+        SSOT_INPUT_FETCH: ${{ inputs.fetch }}
+        SSOT_INPUT_JSON: ${{ inputs.json }}
+        SSOT_INPUT_DISCOVER: ${{ inputs.discover }}
       run: |
         CLI="${GITHUB_ACTION_PATH}/ssot_check.py"
-        ARGS=(check --manifest "${{ inputs.manifest }}" --root "${{ inputs.root }}")
-        if [ "${{ inputs.fetch }}" = "true" ]; then ARGS+=(--fetch); fi
-        if [ "${{ inputs.json }}" = "true" ]; then ARGS+=(--json); fi
+        ARGS=(check --manifest "$SSOT_INPUT_MANIFEST" --root "$SSOT_INPUT_ROOT")
+        if [ "$SSOT_INPUT_FETCH" = "true" ]; then ARGS+=(--fetch); fi
+        if [ "$SSOT_INPUT_JSON" = "true" ]; then ARGS+=(--json); fi
         echo "Running: python3 ssot_check.py ${ARGS[*]}"
         python3 "$CLI" "${ARGS[@]}"
         # ssot_check.py exits 1 on drift and 2 on manifest error; either fails
         # the step (and the build) because bash propagates the exit code.
+
+        case "$SSOT_INPUT_DISCOVER" in
+          off)
+            ;;
+          warn)
+            python3 "$CLI" discover \
+              --manifest "$SSOT_INPUT_MANIFEST" \
+              --root "$SSOT_INPUT_ROOT" \
+              --untracked-only \
+              --github-annotations
+            ;;
+          *)
+            echo "Invalid discover input: expected 'off' or 'warn'." >&2
+            exit 2
+            ;;
+        esac

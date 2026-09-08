@@ -629,6 +629,19 @@ class FreshnessTests(unittest.TestCase):
 
 # --------------------------------------------------------------------------- #
 class DiscoverTests(unittest.TestCase):
+    def _price_manifest(self):
+        return sc.parse_manifest(textwrap.dedent("""\
+            facts:
+              - name: pro-price
+                type: currency
+                canonical:
+                  file: pricing.md
+                  pattern: 'Pro plan: \\$([\\d,]+)'
+                copies:
+                  - file: README.md
+                    pattern: 'costs \\$([\\d,]+)'
+            """))
+
     def test_proposes_repeated_value(self):
         tree = os.path.join(FIXTURES, "discover_tree")
         result = sc.discover(tree)
@@ -652,6 +665,83 @@ class DiscoverTests(unittest.TestCase):
         for p in result["proposals"]:
             for occ in p["occurrences"]:
                 self.assertNotIn("vendor/", occ["file"])
+
+    def test_manifest_coverage_reports_only_new_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            write(os.path.join(tmp, "launch.md"), "Starts at $49 today.\n")
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, self._price_manifest())
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            prices = [p for p in uncovered["proposals"]
+                      if p["value"] == "49"]
+            self.assertEqual(len(prices), 1)
+            self.assertEqual(prices[0]["files"], ["launch.md"])
+            self.assertEqual(uncovered["uncovered_occurrences"], 1)
+
+    def test_manifest_coverage_suppresses_fully_tracked_fact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, self._price_manifest())
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(uncovered["proposals"], [])
+            self.assertEqual(uncovered["drift"], [])
+            self.assertEqual(uncovered["uncovered_occurrences"], 0)
+
+    def test_manifest_coverage_keeps_only_untracked_live_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "88 integrations\n")
+            write(os.path.join(tmp, "README.md"), "88 integrations shipped\n")
+            write(os.path.join(tmp, "launch.md"), "90 integrations today\n")
+            manifest = sc.parse_manifest(textwrap.dedent("""\
+                facts:
+                  - name: integration-count
+                    type: integer
+                    canonical:
+                      file: pricing.md
+                      pattern: '(\\d+) integrations'
+                    copies:
+                      - file: README.md
+                        pattern: '(\\d+) integrations'
+                """))
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, manifest)
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(len(uncovered["drift"]), 1)
+            self.assertEqual(uncovered["drift"][0]["values"], ["88", "90"])
+            self.assertEqual(uncovered["drift"][0]["files"], ["launch.md"])
+
+    def test_github_annotations_are_advisory_and_deduplicated(self):
+        result = {
+            "proposals": [{
+                "value": "90", "occurrences": [{
+                    "file": "docs/launch.md", "line": 3, "value": "90",
+                }],
+            }],
+            "drift": [{
+                "unit": "integration", "values": ["88", "90"],
+                "occurrences": [{
+                    "file": "docs/launch.md", "line": 3, "value": "90",
+                }],
+            }],
+        }
+        with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) \
+                as output:
+            sc.render_discover_github(result)
+
+        report = output.getvalue()
+        self.assertEqual(report.count("::warning"), 1)
+        self.assertIn("file=docs/launch.md,line=3", report)
+        self.assertIn("advisory only", report)
 
 
 # --------------------------------------------------------------------------- #
@@ -723,6 +813,39 @@ class CLIExitCodeTests(unittest.TestCase):
                   "      - file: b.md\n        pattern: '(\\d+)'\n")
             r = self._run(["validate"], tmp)
             self.assertEqual(r.returncode, 2)
+
+    def test_untracked_discovery_requires_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "README.md"), "Costs $49.\n")
+            r = self._run(["discover", "--untracked-only"], tmp)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("requires a valid SSOT manifest", r.stderr)
+
+    def test_untracked_discovery_emits_github_warning_but_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            write(os.path.join(tmp, "launch.md"), "Starts at $49 today.\n")
+            write(os.path.join(tmp, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: currency
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Pro plan: \\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'costs \\$([\\d,]+)'
+                """))
+
+            r = self._run([
+                "discover", "--manifest", ".ssot.yaml",
+                "--untracked-only", "--github-annotations",
+            ], tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("::warning file=launch.md,line=1", r.stdout)
+            self.assertNotIn("file=pricing.md", r.stdout)
+            self.assertNotIn("file=README.md", r.stdout)
 
 
 if __name__ == "__main__":

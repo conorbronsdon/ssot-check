@@ -23,3 +23,13 @@ jobs:
         run: |
           python3 ssot_check.py --version
           python3 ssot_check.py validate -f .ssot.example.yaml
+
+  self-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check this repository's SSOT manifest and discovery coverage
+        uses: ./
+        with:
+          manifest: .ssot.yaml
+          discover: warn

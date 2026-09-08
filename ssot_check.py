@@ -26,7 +26,7 @@ import subprocess
 import sys
 from datetime import date, datetime
 
-__version__ = "0.1.1"
+__version__ = "0.1.3"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
@@ -952,6 +952,110 @@ def discover(root, ignore_paths=None):
             "files_scanned": len({o["file"] for o in occurrences})}
 
 
+def _manifest_occurrences(root, manifest):
+    """Return the concrete local occurrences already curated in a manifest.
+
+    Discovery is heuristic, but coverage is not: a candidate is covered only
+    when its file, line, and typed-normalized value match a locator that the
+    manifest actually extracts.
+    """
+    tracked = []
+    ignore_paths = manifest.get("ignore_paths") or []
+    for fact in manifest["facts"]:
+        ftype = fact.get("type", "string")
+        locators = [(fact["canonical"]["file"], fact["canonical"])]
+        for cp in fact["copies"]:
+            for concrete in _expand_copy_files(root, cp["file"], ignore_paths):
+                locators.append((concrete, cp))
+
+        for relpath, locator in locators:
+            if is_cross_repo(root, relpath):
+                continue
+            content = _read_file(_resolve(root, relpath))
+            if content is None:
+                continue
+            value, line, _ = extract(content, locator["pattern"])
+            if value is None:
+                continue
+            try:
+                normalized = normalize_value(value, ftype)
+            except ValueError:
+                continue
+            tracked.append({
+                "fact": fact["name"],
+                "file": os.path.normpath(relpath).replace(os.sep, "/"),
+                "line": line,
+                "value": normalized,
+                "type": ftype,
+            })
+    return tracked
+
+
+def add_manifest_coverage(root, result, manifest):
+    """Mark discovered occurrences that an existing manifest already covers."""
+    by_location = {}
+    for item in _manifest_occurrences(root, manifest):
+        by_location.setdefault((item["file"], item["line"]), []).append(item)
+
+    seen = set()
+    for group in result["proposals"] + result["drift"]:
+        for occurrence in group["occurrences"]:
+            identity = (occurrence["file"], occurrence["line"],
+                        occurrence["value"], occurrence["kind"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            occurrence["covered_by"] = []
+            candidates = by_location.get(
+                (occurrence["file"], occurrence["line"]), [])
+            for candidate in candidates:
+                try:
+                    value = normalize_value(occurrence["value"],
+                                            candidate["type"])
+                except ValueError:
+                    continue
+                if value == candidate["value"]:
+                    occurrence["covered_by"].append(candidate["fact"])
+
+    result["manifest_facts"] = len(manifest["facts"])
+    return result
+
+
+def filter_uncovered_discovery(result):
+    """Keep only candidate occurrences not represented in the manifest."""
+    filtered = dict(result)
+    filtered["proposals"] = []
+    filtered["drift"] = []
+
+    for key in ("proposals", "drift"):
+        for group in result[key]:
+            occurrences = []
+            occurrence_keys = set()
+            for occurrence in group["occurrences"]:
+                if occurrence.get("covered_by"):
+                    continue
+                identity = (occurrence["file"], occurrence["line"],
+                            occurrence["value"])
+                if identity in occurrence_keys:
+                    continue
+                occurrence_keys.add(identity)
+                occurrences.append(occurrence)
+            if not occurrences:
+                continue
+            item = dict(group)
+            item["occurrences"] = occurrences
+            item["files"] = sorted({o["file"] for o in occurrences})
+            filtered[key].append(item)
+
+    filtered["uncovered_occurrences"] = len({
+        (o["file"], o["line"], o["value"])
+        for key in ("proposals", "drift")
+        for group in filtered[key]
+        for o in group["occurrences"]
+    })
+    return filtered
+
+
 def _cluster(occurrences):
     # Value appearing in >= 2 distinct files -> proposed fact (likely a copy).
     by_value = {}
@@ -1157,6 +1261,62 @@ def render_discover(result):
            "canonicals, then create .ssot.yaml by hand or with AI assistance.")
 
 
+def _gha_escape_data(value):
+    return (str(value).replace("%", "%25").replace("\r", "%0D")
+            .replace("\n", "%0A"))
+
+
+def _gha_escape_property(value):
+    return (_gha_escape_data(value).replace(":", "%3A")
+            .replace(",", "%2C"))
+
+
+def render_discover_github(result):
+    """Emit one GitHub warning per uncovered occurrence, never a failure."""
+    seen = set()
+    warnings = 0
+
+    # A live-drift candidate is more useful than the repeated-value proposal
+    # for the same occurrence, so render drift first and de-duplicate afterward.
+    for drift in result["drift"]:
+        values = " vs ".join(drift["values"])
+        for occurrence in drift["occurrences"]:
+            identity = (occurrence["file"], occurrence["line"],
+                        occurrence["value"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            message = (f"Potential untracked drift for {drift['unit']}: "
+                       f"{values}. This occurrence is not covered by the "
+                       "SSOT manifest.")
+            _print("::warning file=%s,line=%s,title=%s::%s" % (
+                _gha_escape_property(occurrence["file"]),
+                occurrence["line"],
+                _gha_escape_property("Untracked SSOT drift"),
+                _gha_escape_data(message)))
+            warnings += 1
+
+    for proposal in result["proposals"]:
+        for occurrence in proposal["occurrences"]:
+            identity = (occurrence["file"], occurrence["line"],
+                        occurrence["value"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            message = (f"{proposal['value']!r} appears in multiple files, "
+                       "but this occurrence is not covered by the SSOT "
+                       "manifest. Add it as a copy or ignore the path.")
+            _print("::warning file=%s,line=%s,title=%s::%s" % (
+                _gha_escape_property(occurrence["file"]),
+                occurrence["line"],
+                _gha_escape_property("Untracked SSOT candidate"),
+                _gha_escape_data(message)))
+            warnings += 1
+
+    _print(f"ssot-check discover: {warnings} uncovered candidate "
+           f"occurrence(s); advisory only.")
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -1204,16 +1364,43 @@ def cmd_check(args):
 
 def cmd_discover(args):
     root = args.root or "."
+    manifest = None
     manifest_ignore = []
-    mpath = os.path.join(root, ".ssot.yaml")
-    if os.path.isfile(mpath):
+    mpath = args.manifest
+    explicit_manifest = mpath is not None
+    if mpath is None:
+        candidate = os.path.join(root, ".ssot.yaml")
+        if os.path.isfile(candidate):
+            mpath = candidate
+    if mpath is not None:
         try:
-            manifest_ignore = load_manifest(mpath).get("ignore_paths") or []
-        except ManifestError:
-            manifest_ignore = []
+            manifest = load_manifest(mpath)
+        except ManifestError as exc:
+            if explicit_manifest or args.untracked_only:
+                return _fail_config(f"{mpath}: {exc}")
+        if manifest is not None:
+            errors = validate_manifest(manifest)
+            if errors:
+                if explicit_manifest or args.untracked_only:
+                    return _fail_config(
+                        f"manifest invalid; run validate ({errors[0]})")
+                manifest = None
+            else:
+                manifest_ignore = manifest.get("ignore_paths") or []
+
+    if args.untracked_only and manifest is None:
+        return _fail_config(
+            "discover --untracked-only requires a valid SSOT manifest")
+
     result = discover(root, ignore_paths=args.ignore or manifest_ignore)
+    if args.untracked_only:
+        add_manifest_coverage(root, result, manifest)
+        result = filter_uncovered_discovery(result)
+        result["manifest"] = os.path.abspath(mpath)
     if args.json:
         print(json.dumps(result, indent=2))
+    elif args.github_annotations:
+        render_discover_github(result)
     else:
         render_discover(result)
     return 0
@@ -1275,8 +1462,14 @@ def build_parser():
 
     d = sub.add_parser("discover", help="propose drift-prone facts from prose")
     d.add_argument("--root", default=".", help="tree to scan (default: .)")
+    d.add_argument("-f", "--manifest", default=None,
+                   help="manifest used to identify already-covered occurrences")
     d.add_argument("--ignore", action="append",
                    help="glob to skip (repeatable)")
+    d.add_argument("--untracked-only", action="store_true",
+                   help="with a manifest, report only uncovered occurrences")
+    d.add_argument("--github-annotations", action="store_true",
+                   help="emit advisory GitHub Actions warning annotations")
     d.add_argument("--json", action="store_true", help="machine-readable output")
     d.set_defaults(func=cmd_discover)
 

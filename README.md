@@ -65,7 +65,12 @@ Common options (`check`, `validate`, `explain`):
 | `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`. |
 
 `discover` takes `--root DIR` (default `.`), repeatable `--ignore GLOB`, and
-`--json`. Running `ssot_check.py` with no subcommand defaults to `check`.
+`--json`. With `--manifest PATH --untracked-only`, it suppresses occurrences
+already covered by the curated manifest and reports only candidate copies the
+manifest does not know about. `--github-annotations` renders those candidates
+as advisory GitHub Actions warnings. Discovery remains heuristic and exits `0`;
+only deterministic `check` results should gate a build. Running `ssot_check.py`
+with no subcommand defaults to `check`.
 
 Exit codes (`check`): `0` in sync · `1` drift, canonical moved, stale entry,
 unverified copy, or stale-past-freshness canonical · `2` manifest missing,
@@ -256,10 +261,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: conorbronsdon/ssot-check@v0.1.2
+      - uses: conorbronsdon/ssot-check@v0.1.3
         with:
           manifest: .ssot.yaml   # optional (default)
+          discover: warn         # optional; off (default) or warn
 ```
+
+The Action always runs deterministic `check` first and fails on drift or an
+invalid manifest. `discover: warn` then scans for repeated facts and live-drift
+candidates with occurrences outside that manifest, emitting file-and-line
+annotations without failing the job. Add the occurrence to the manifest when it
+is a real copy, or exclude intentional/historical material with `ignore_paths`.
 
 ## Development
 
