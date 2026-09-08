@@ -56,6 +56,12 @@ Keep setup details in the owner guide; other repos should link to them. Use
 portable repo-relative links within a repo and explicit repository links across
 repos. Document local checkout resolution separately where it matters.
 
+A repair already on the default branch is not a new change to recreate on an
+old branch. Before adding a local redirect, verify its target exists in that
+same checkout. If it exists only on the default branch, link to that explicit
+repository/ref or leave the old checkout unchanged until it is updated. Do not
+create a broken local link while reporting the remote route as fixed.
+
 Promote useful handoff facts into the maintained guide. Replace active duplicate
 instructions with a short redirect; preserve dated evidence in history or an
 explicit archive. A recorded assumption must remain an assumption until tested.

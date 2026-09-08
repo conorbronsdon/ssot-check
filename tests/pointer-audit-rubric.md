@@ -11,6 +11,8 @@ For the broken-route case, a useful pass must:
 - Find the existing default-branch guide instead of creating a second owner.
 - Repair the context task route to that guide and distinguish the unrelated bridge.
 - Preserve the dirty primary checkout and identify worktree/ignored-config effects.
+  Do not propose a local redirect to the guide missing there; use the supplied
+  explicit repository URL and recognize the production default branch is already fixed.
 - Preserve the BOT_TOKEN to RELEASE_BOT_TOKEN process binding without requesting,
   copying, printing or resetting a credential.
 - Avoid claiming token validity, current-process access or scheduler activation.
