@@ -268,6 +268,12 @@ python3 -m unittest discover tests   # stdlib only; no install step
 ```
 
 
+For skill changes, run the [fictional pointer-audit task](tests/fixtures/pointer-audit.md)
+in a separate tool-free model context with only the named skill/reference/fixture
+files. Keep the [evaluation rubric](tests/pointer-audit-rubric.md) out of that
+context and use it afterward to inspect the actual proposed edits. Evaluate the
+broken-route and no-change cases separately from the CLI unit suite.
+
 ## Disclaimer
 
 *This is an independent personal project, not affiliated with, sponsored by, or endorsed by any company. All views expressed are my own.*
