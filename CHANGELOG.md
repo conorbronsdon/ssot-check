@@ -13,8 +13,9 @@ All notable changes to ssot-check are documented here. The format follows
 - Manifest-aware discovery via `discover --manifest PATH --untracked-only`,
   which suppresses occurrences already represented by a curated manifest.
 - Advisory GitHub Actions annotations for uncovered discovery candidates, and
-  an opt-in `discover: warn` Action input. Heuristic discovery remains exit `0`;
-  deterministic `check` remains the build gate.
+  an opt-in `discover: warn` Action input. Discovery findings never fail a
+  build — reported candidates exit `0` — and deterministic `check` remains the
+  gate.
 - A repository `.ssot.yaml` and CI self-check so ssot-check verifies its own
   release metadata and discovery coverage.
 - Agent-level pointer audit for disconnected setup guides, cross-repo ownership,
@@ -27,11 +28,27 @@ All notable changes to ssot-check are documented here. The format follows
 - The skill now distinguishes audit-only requests from explicitly authorized
   fixes, preserving scope without asking again for an already-approved edit.
   CLI commands and their opt-in `--fetch` boundary are unchanged.
+- `discover --root` now defaults to the manifest's directory, matching `check`
+  and `explain`, instead of the working directory.
+- An explicitly passed `discover --manifest` that is missing, unparseable or
+  schema-invalid is now a configuration error (exit `2`). Previously `discover`
+  swallowed it and silently dropped the manifest's `ignore_paths`.
+- `discover --github-annotations` now requires `--untracked-only`, since its
+  annotation text asserts that an occurrence is untracked.
 
 ### Fixed
 
 - CLI, Codex plugin, README Action example and changelog release versions now
   agree. The published v0.1.2 tag is preserved rather than rewritten.
+- Manifest-aware discovery no longer reports covered locations as untracked in
+  three cases: a manifest outside the working directory (every locator resolved
+  against the wrong base and matched nothing), a value repeated twice on one
+  line (the second occurrence never had its coverage resolved), and
+  `--github-annotations` used without `--untracked-only` (the coverage claim
+  was made without a coverage pass).
+- `discover --untracked-only` warns on stderr when no manifest locator resolves
+  under the scanned root, so a misconfigured root is distinguishable from a
+  repository with nothing curated.
 
 ## [0.1.2] — 2026-09-02
 

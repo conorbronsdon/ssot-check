@@ -48,6 +48,20 @@ runs:
         SSOT_INPUT_DISCOVER: ${{ inputs.discover }}
       run: |
         CLI="${GITHUB_ACTION_PATH}/ssot_check.py"
+
+        # Validate inputs before the check runs, so a typo fails immediately
+        # instead of after a full audit. Normalize case and the boolean-ish
+        # spellings a workflow's YAML may hand us for an unquoted `off`.
+        DISCOVER="${SSOT_INPUT_DISCOVER,,}"
+        case "$DISCOVER" in
+          ""|off|false) DISCOVER=off ;;
+          warn|true)    DISCOVER=warn ;;
+          *)
+            echo "Invalid discover input: expected 'off' or 'warn'." >&2
+            exit 2
+            ;;
+        esac
+
         ARGS=(check --manifest "$SSOT_INPUT_MANIFEST" --root "$SSOT_INPUT_ROOT")
         if [ "$SSOT_INPUT_FETCH" = "true" ]; then ARGS+=(--fetch); fi
         if [ "$SSOT_INPUT_JSON" = "true" ]; then ARGS+=(--json); fi
@@ -56,18 +70,10 @@ runs:
         # ssot_check.py exits 1 on drift and 2 on manifest error; either fails
         # the step (and the build) because bash propagates the exit code.
 
-        case "$SSOT_INPUT_DISCOVER" in
-          off)
-            ;;
-          warn)
-            python3 "$CLI" discover \
-              --manifest "$SSOT_INPUT_MANIFEST" \
-              --root "$SSOT_INPUT_ROOT" \
-              --untracked-only \
-              --github-annotations
-            ;;
-          *)
-            echo "Invalid discover input: expected 'off' or 'warn'." >&2
-            exit 2
-            ;;
-        esac
+        if [ "$DISCOVER" = "warn" ]; then
+          python3 "$CLI" discover \
+            --manifest "$SSOT_INPUT_MANIFEST" \
+            --root "$SSOT_INPUT_ROOT" \
+            --untracked-only \
+            --github-annotations
+        fi

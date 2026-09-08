@@ -958,6 +958,12 @@ def _manifest_occurrences(root, manifest):
     Discovery is heuristic, but coverage is not: a candidate is covered only
     when its file, line, and typed-normalized value match a locator that the
     manifest actually extracts.
+
+    Coverage is first-match-per-locator, because `extract` is: when a manifest
+    pattern matches a file more than once, only the first match's line counts
+    as covered. A later repetition of the same value is reported as a genuine
+    untracked occurrence — `check` reports the same file as an ambiguous
+    pattern. Cross-repo locators are skipped; discovery only scans `root`.
     """
     tracked = []
     ignore_paths = manifest.get("ignore_paths") or []
@@ -993,36 +999,47 @@ def _manifest_occurrences(root, manifest):
 
 def add_manifest_coverage(root, result, manifest):
     """Mark discovered occurrences that an existing manifest already covers."""
+    tracked = _manifest_occurrences(root, manifest)
     by_location = {}
-    for item in _manifest_occurrences(root, manifest):
+    for item in tracked:
         by_location.setdefault((item["file"], item["line"]), []).append(item)
 
-    seen = set()
+    # _cluster shares occurrence dicts between proposals and drift, and one
+    # line can carry the same value twice. Memoize the resolved coverage per
+    # identity rather than skipping repeats: every occurrence must end up with
+    # a covered_by key, or filtering reads the missing key as "uncovered".
+    resolved = {}
     for group in result["proposals"] + result["drift"]:
         for occurrence in group["occurrences"]:
             identity = (occurrence["file"], occurrence["line"],
                         occurrence["value"], occurrence["kind"])
-            if identity in seen:
-                continue
-            seen.add(identity)
-            occurrence["covered_by"] = []
-            candidates = by_location.get(
-                (occurrence["file"], occurrence["line"]), [])
-            for candidate in candidates:
-                try:
-                    value = normalize_value(occurrence["value"],
-                                            candidate["type"])
-                except ValueError:
-                    continue
-                if value == candidate["value"]:
-                    occurrence["covered_by"].append(candidate["fact"])
+            if identity not in resolved:
+                facts = []
+                candidates = by_location.get(
+                    (occurrence["file"], occurrence["line"]), [])
+                for candidate in candidates:
+                    try:
+                        value = normalize_value(occurrence["value"],
+                                                candidate["type"])
+                    except ValueError:
+                        continue
+                    if value == candidate["value"]:
+                        facts.append(candidate["fact"])
+                resolved[identity] = facts
+            occurrence["covered_by"] = list(resolved[identity])
 
     result["manifest_facts"] = len(manifest["facts"])
+    result["manifest_locators"] = len(tracked)
     return result
 
 
 def filter_uncovered_discovery(result):
-    """Keep only candidate occurrences not represented in the manifest."""
+    """Keep only candidate occurrences not represented in the manifest.
+
+    `proposals` and `drift` are filtered. `files_scanned` and `discarded`
+    are carried through from the full scan unchanged: they describe what was
+    read, not what the manifest covers.
+    """
     filtered = dict(result)
     filtered["proposals"] = []
     filtered["drift"] = []
@@ -1363,13 +1380,18 @@ def cmd_check(args):
 
 
 def cmd_discover(args):
-    root = args.root or "."
+    # The annotation text states that an occurrence is not covered by the
+    # manifest, which is only established by the --untracked-only pass.
+    if args.github_annotations and not args.untracked_only:
+        return _fail_config(
+            "discover --github-annotations requires --untracked-only")
+
     manifest = None
     manifest_ignore = []
     mpath = args.manifest
     explicit_manifest = mpath is not None
     if mpath is None:
-        candidate = os.path.join(root, ".ssot.yaml")
+        candidate = os.path.join(args.root or ".", ".ssot.yaml")
         if os.path.isfile(candidate):
             mpath = candidate
     if mpath is not None:
@@ -1392,11 +1414,24 @@ def cmd_discover(args):
         return _fail_config(
             "discover --untracked-only requires a valid SSOT manifest")
 
+    # Match check/explain: a manifest's relative paths are resolved against its
+    # own directory unless --root says otherwise. Resolving them against the
+    # working directory instead silently matches nothing, which reads as "the
+    # manifest covers none of this" rather than as the misconfiguration it is.
+    root = args.root
+    if root is None:
+        root = (os.path.dirname(os.path.abspath(mpath)) if mpath is not None
+                else ".")
+
     result = discover(root, ignore_paths=args.ignore or manifest_ignore)
     if args.untracked_only:
         add_manifest_coverage(root, result, manifest)
         result = filter_uncovered_discovery(result)
         result["manifest"] = os.path.abspath(mpath)
+        if not result["manifest_locators"]:
+            print(f"ssot-check: no manifest locator resolved under {root!r}; "
+                  "every occurrence will be reported as uncovered. Check "
+                  "--root and the manifest's file paths.", file=sys.stderr)
     if args.json:
         print(json.dumps(result, indent=2))
     elif args.github_annotations:
@@ -1461,7 +1496,9 @@ def build_parser():
     v.set_defaults(func=cmd_validate)
 
     d = sub.add_parser("discover", help="propose drift-prone facts from prose")
-    d.add_argument("--root", default=".", help="tree to scan (default: .)")
+    d.add_argument("--root", default=None,
+                   help="tree to scan (default: the manifest's directory, "
+                        "or . when there is no manifest)")
     d.add_argument("-f", "--manifest", default=None,
                    help="manifest used to identify already-covered occurrences")
     d.add_argument("--ignore", action="append",
@@ -1469,7 +1506,8 @@ def build_parser():
     d.add_argument("--untracked-only", action="store_true",
                    help="with a manifest, report only uncovered occurrences")
     d.add_argument("--github-annotations", action="store_true",
-                   help="emit advisory GitHub Actions warning annotations")
+                   help="emit advisory GitHub Actions warning annotations "
+                        "(requires --untracked-only; --json takes precedence)")
     d.add_argument("--json", action="store_true", help="machine-readable output")
     d.set_defaults(func=cmd_discover)
 

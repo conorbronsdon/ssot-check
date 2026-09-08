@@ -59,8 +59,13 @@ absolute paths. Use the requested manifest path if it differs from `.ssot.yaml`.
    `python3 "$SKILL_DIR/ssot_check.py" discover --root "$TARGET_REPO" --manifest "$TARGET_REPO/.ssot.yaml" --untracked-only`
    so already-curated occurrences are suppressed. Without a manifest, omit the
    last two options. Discovery scans prose for repeated numbers, amounts,
-   percentages, versions and freshness wording. It is heuristic, writes
-   nothing, and exits `0`; use `check`, not discovery, as a deterministic gate.
+   percentages, versions and freshness wording. Its findings are heuristic and
+   it writes nothing; use `check`, not discovery, as a deterministic gate.
+   Reported candidates exit `0`, but exit `2` is a configuration error — a
+   missing or invalid manifest — and means the scan established nothing, not
+   that the repo is clean. A "no manifest locator resolved" warning on stderr
+   means the manifest's paths did not resolve under `--root`; fix that before
+   reading any candidate as real.
 3. Curate the findings. Use the source named by the repo's contract or owner
    documentation, then inspect the actual source. A marketing copy is not
    canonical unless ownership was explicitly delegated to it. Do not treat
