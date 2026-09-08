@@ -25,6 +25,18 @@ All notable changes to ssot-check are documented here. The format follows
 
 ### Changed
 
+- **Breaking (Action):** the `root` input now defaults to empty, so an omitted
+  `root` lets the CLI infer the manifest's directory — matching the input's
+  long-documented default and the behavior of `check`/`explain`. Previously the
+  Action always passed `--root .`. If your manifest is not at the repository
+  root and its `file:` paths are relative to that root, set `root: .`
+  explicitly to keep the old behavior; without it `check` reports
+  `CANONICAL MOVED` and fails the build.
+- **`check`, `explain` and discovery now report the line of the captured
+  value** rather than the line the match started on. These differ only when a
+  pattern spans lines, where the reported location moves from the pattern's
+  first line to the value's. The reported `file:line` appears in the text
+  report and in `--json`.
 - The skill now distinguishes audit-only requests from explicitly authorized
   fixes, preserving scope without asking again for an already-approved edit.
   CLI commands and their opt-in `--fetch` boundary are unchanged.
@@ -44,9 +56,10 @@ All notable changes to ssot-check are documented here. The format follows
   inferred line/value identities. This suppresses tracked multiline and
   display-normalized values while preserving genuinely untracked repetitions
   on the same line.
-- GitHub annotations are relative to the runner workspace when discovery scans
-  a nested root, and the Action no longer overrides manifest-directory root
-  inference when its `root` input is omitted.
+- GitHub annotations are relative to the runner workspace (`GITHUB_WORKSPACE`,
+  falling back to the working directory) when discovery scans a nested root.
+  They previously carried scan-root-relative paths, which GitHub could not
+  resolve to a file in the checkout.
 - Plain discovery continues to honor valid `ignore_paths` from an auto-loaded
   draft manifest even before that manifest has a complete `facts` section.
 - `--github-annotations` can no longer be used without `--untracked-only`, so
