@@ -481,19 +481,28 @@ def values_match(canonical, copy, ftype="string", rounding=None):
 # --------------------------------------------------------------------------- #
 # Capture-group extraction
 # --------------------------------------------------------------------------- #
+def _extract_details(content, pattern):
+    """Return the first captured value, its location, and the match count."""
+    compiled = re.compile(pattern)
+    matches = list(compiled.finditer(content))
+    if not matches:
+        return None, None, 0, None, None
+    first = matches[0]
+    start, end = first.span(1)
+    lineno = content.count("\n", 0, start) + 1
+    return first.group(1), lineno, len(matches), start, end
+
+
 def extract(content, pattern):
     """Return (value, lineno, match_count). value/lineno are None if no match.
 
     Uses the FIRST match; match_count > 1 signals an ambiguous pattern.
     Patterns are matched against the whole file content (not line by line).
+    The line identifies the captured value, which may be below the beginning
+    of a multiline match.
     """
-    compiled = re.compile(pattern)
-    matches = list(compiled.finditer(content))
-    if not matches:
-        return None, None, 0
-    first = matches[0]
-    lineno = content.count("\n", 0, first.start()) + 1
-    return first.group(1), lineno, len(matches)
+    value, line, count, _, _ = _extract_details(content, pattern)
+    return value, line, count
 
 
 # --------------------------------------------------------------------------- #
@@ -912,12 +921,13 @@ def discover(root, ignore_paths=None):
         content = _read_file(full)
         if content is None:
             continue
-        def add(value, raw, kind, m, unit):
-            line = content.count("\n", 0, m.start()) + 1
+        def add(value, raw, kind, m, unit, capture=1):
+            start, end = m.span(capture)
+            line = content.count("\n", 0, start) + 1
             occurrences.append({
                 "value": value, "raw": raw, "kind": kind, "file": rel,
                 "line": line, "context": _context(content, m.start(), m.end()),
-                "unit": unit,
+                "unit": unit, "_start": start, "_end": end,
             })
 
         for regex, kind in _GENERIC_PATTERNS:
@@ -939,7 +949,8 @@ def discover(root, ignore_paths=None):
             value = _norm_number(m.group(2))
             if len(re.sub(r"\D", "", value)) < 2:
                 continue
-            add(value, m.group(2), "counted", m, m.group(1).lower().rstrip("s"))
+            add(value, m.group(2), "counted", m,
+                m.group(1).lower().rstrip("s"), capture=2)
         for m in _AGING_RE.finditer(content):
             value = _norm_number(m.group(1))
             if len(re.sub(r"\D", "", value)) < 2:
@@ -956,11 +967,11 @@ def _manifest_occurrences(root, manifest):
     """Return the concrete local occurrences already curated in a manifest.
 
     Discovery is heuristic, but coverage is not: a candidate is covered only
-    when its file, line, and typed-normalized value match a locator that the
-    manifest actually extracts.
+    when its physical value capture falls inside the value capture of a
+    locator that the manifest actually extracts from the same file.
 
     Coverage is first-match-per-locator, because `extract` is: when a manifest
-    pattern matches a file more than once, only the first match's line counts
+    pattern matches a file more than once, only the first match's capture counts
     as covered. A later repetition of the same value is reported as a genuine
     untracked occurrence — `check` reports the same file as an ambiguous
     pattern. Cross-repo locators are skipped; discovery only scans `root`.
@@ -980,7 +991,8 @@ def _manifest_occurrences(root, manifest):
             content = _read_file(_resolve(root, relpath))
             if content is None:
                 continue
-            value, line, _ = extract(content, locator["pattern"])
+            value, line, _, start, end = _extract_details(
+                content, locator["pattern"])
             if value is None:
                 continue
             try:
@@ -993,37 +1005,48 @@ def _manifest_occurrences(root, manifest):
                 "line": line,
                 "value": normalized,
                 "type": ftype,
+                "start": start,
+                "end": end,
             })
     return tracked
+
+
+def _occurrence_identity(occurrence):
+    """Identify a discovery occurrence without conflating same-line values."""
+    if "_start" in occurrence and "_end" in occurrence:
+        return (occurrence["file"], occurrence["_start"], occurrence["_end"])
+    return (occurrence["file"], occurrence["line"], occurrence["value"])
+
+
+def _span_contains(container, contained):
+    """Return whether one half-open capture span fully contains another."""
+    outer_start, outer_end = container
+    inner_start, inner_end = contained
+    return outer_start <= inner_start and inner_end <= outer_end
 
 
 def add_manifest_coverage(root, result, manifest):
     """Mark discovered occurrences that an existing manifest already covers."""
     tracked = _manifest_occurrences(root, manifest)
-    by_location = {}
+    by_file = {}
     for item in tracked:
-        by_location.setdefault((item["file"], item["line"]), []).append(item)
+        by_file.setdefault(item["file"], []).append(item)
 
-    # _cluster shares occurrence dicts between proposals and drift, and one
-    # line can carry the same value twice. Memoize the resolved coverage per
-    # identity rather than skipping repeats: every occurrence must end up with
-    # a covered_by key, or filtering reads the missing key as "uncovered".
+    # _cluster shares occurrence dicts between proposals and drift. Resolve
+    # each physical capture once, then copy the answer everywhere that shared
+    # occurrence appears. Capture spans distinguish repeated values on one
+    # line and survive discovery's intentionally lossy display normalization.
     resolved = {}
     for group in result["proposals"] + result["drift"]:
         for occurrence in group["occurrences"]:
-            identity = (occurrence["file"], occurrence["line"],
-                        occurrence["value"], occurrence["kind"])
+            identity = _occurrence_identity(occurrence)
             if identity not in resolved:
                 facts = []
-                candidates = by_location.get(
-                    (occurrence["file"], occurrence["line"]), [])
+                candidates = by_file.get(occurrence["file"], [])
                 for candidate in candidates:
-                    try:
-                        value = normalize_value(occurrence["value"],
-                                                candidate["type"])
-                    except ValueError:
-                        continue
-                    if value == candidate["value"]:
+                    if "_start" in occurrence and _span_contains(
+                            (candidate["start"], candidate["end"]),
+                            (occurrence["_start"], occurrence["_end"])):
                         facts.append(candidate["fact"])
                 resolved[identity] = facts
             occurrence["covered_by"] = list(resolved[identity])
@@ -1051,8 +1074,7 @@ def filter_uncovered_discovery(result):
             for occurrence in group["occurrences"]:
                 if occurrence.get("covered_by"):
                     continue
-                identity = (occurrence["file"], occurrence["line"],
-                            occurrence["value"])
+                identity = _occurrence_identity(occurrence)
                 if identity in occurrence_keys:
                     continue
                 occurrence_keys.add(identity)
@@ -1065,7 +1087,7 @@ def filter_uncovered_discovery(result):
             filtered[key].append(item)
 
     filtered["uncovered_occurrences"] = len({
-        (o["file"], o["line"], o["value"])
+        _occurrence_identity(o)
         for key in ("proposals", "drift")
         for group in filtered[key]
         for o in group["occurrences"]
@@ -1288,6 +1310,20 @@ def _gha_escape_property(value):
             .replace(",", "%2C"))
 
 
+def _github_annotation_file(result, occurrence):
+    """Return a path relative to the GitHub workspace/current directory."""
+    root = result.get("root")
+    if not root:
+        return occurrence["file"]
+    absolute = os.path.join(root, occurrence["file"])
+    base = os.environ.get("GITHUB_WORKSPACE") or os.getcwd()
+    try:
+        relative = os.path.relpath(absolute, base)
+    except ValueError:  # Different Windows drives cannot be relativized.
+        return occurrence["file"]
+    return relative.replace(os.sep, "/")
+
+
 def render_discover_github(result):
     """Emit one GitHub warning per uncovered occurrence, never a failure."""
     seen = set()
@@ -1298,8 +1334,7 @@ def render_discover_github(result):
     for drift in result["drift"]:
         values = " vs ".join(drift["values"])
         for occurrence in drift["occurrences"]:
-            identity = (occurrence["file"], occurrence["line"],
-                        occurrence["value"])
+            identity = _occurrence_identity(occurrence)
             if identity in seen:
                 continue
             seen.add(identity)
@@ -1307,7 +1342,8 @@ def render_discover_github(result):
                        f"{values}. This occurrence is not covered by the "
                        "SSOT manifest.")
             _print("::warning file=%s,line=%s,title=%s::%s" % (
-                _gha_escape_property(occurrence["file"]),
+                _gha_escape_property(
+                    _github_annotation_file(result, occurrence)),
                 occurrence["line"],
                 _gha_escape_property("Untracked SSOT drift"),
                 _gha_escape_data(message)))
@@ -1315,8 +1351,7 @@ def render_discover_github(result):
 
     for proposal in result["proposals"]:
         for occurrence in proposal["occurrences"]:
-            identity = (occurrence["file"], occurrence["line"],
-                        occurrence["value"])
+            identity = _occurrence_identity(occurrence)
             if identity in seen:
                 continue
             seen.add(identity)
@@ -1324,7 +1359,8 @@ def render_discover_github(result):
                        "but this occurrence is not covered by the SSOT "
                        "manifest. Add it as a copy or ignore the path.")
             _print("::warning file=%s,line=%s,title=%s::%s" % (
-                _gha_escape_property(occurrence["file"]),
+                _gha_escape_property(
+                    _github_annotation_file(result, occurrence)),
                 occurrence["line"],
                 _gha_escape_property("Untracked SSOT candidate"),
                 _gha_escape_data(message)))
@@ -1340,6 +1376,16 @@ def render_discover_github(result):
 def _fail_config(msg):
     print(f"ssot-check: {msg}", file=sys.stderr)
     return 2
+
+
+def _public_discovery_result(value):
+    """Remove private capture offsets before producing machine-readable JSON."""
+    if isinstance(value, dict):
+        return {key: _public_discovery_result(item)
+                for key, item in value.items() if not key.startswith("_")}
+    if isinstance(value, list):
+        return [_public_discovery_result(item) for item in value]
+    return value
 
 
 def cmd_validate(args):
@@ -1401,14 +1447,20 @@ def cmd_discover(args):
             if explicit_manifest or args.untracked_only:
                 return _fail_config(f"{mpath}: {exc}")
         if manifest is not None:
+            # Plain discovery historically honored ignore_paths from an
+            # auto-loaded draft before the manifest had a complete facts
+            # section. Preserve that useful behavior, but only for a valid
+            # list of strings; explicit/coverage manifests remain strict.
+            ignore_paths = manifest.get("ignore_paths")
+            if isinstance(ignore_paths, list) and all(
+                    isinstance(path, str) for path in ignore_paths):
+                manifest_ignore = ignore_paths
             errors = validate_manifest(manifest)
             if errors:
                 if explicit_manifest or args.untracked_only:
                     return _fail_config(
                         f"manifest invalid; run validate ({errors[0]})")
                 manifest = None
-            else:
-                manifest_ignore = manifest.get("ignore_paths") or []
 
     if args.untracked_only and manifest is None:
         return _fail_config(
@@ -1433,7 +1485,7 @@ def cmd_discover(args):
                   "every occurrence will be reported as uncovered. Check "
                   "--root and the manifest's file paths.", file=sys.stderr)
     if args.json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(_public_discovery_result(result), indent=2))
     elif args.github_annotations:
         render_discover_github(result)
     else:

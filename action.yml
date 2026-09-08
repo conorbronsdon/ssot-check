@@ -12,7 +12,7 @@ inputs:
   root:
     description: "Repo root for resolving relative paths (default: manifest directory)."
     required: false
-    default: "."
+    default: ""
   fetch:
     description: >-
       For cross-repo copies, run `git fetch` in the sibling repo and compare
@@ -62,7 +62,8 @@ runs:
             ;;
         esac
 
-        ARGS=(check --manifest "$SSOT_INPUT_MANIFEST" --root "$SSOT_INPUT_ROOT")
+        ARGS=(check --manifest "$SSOT_INPUT_MANIFEST")
+        if [ -n "$SSOT_INPUT_ROOT" ]; then ARGS+=(--root "$SSOT_INPUT_ROOT"); fi
         if [ "$SSOT_INPUT_FETCH" = "true" ]; then ARGS+=(--fetch); fi
         if [ "$SSOT_INPUT_JSON" = "true" ]; then ARGS+=(--json); fi
         echo "Running: python3 ssot_check.py ${ARGS[*]}"
@@ -71,9 +72,14 @@ runs:
         # the step (and the build) because bash propagates the exit code.
 
         if [ "$DISCOVER" = "warn" ]; then
-          python3 "$CLI" discover \
-            --manifest "$SSOT_INPUT_MANIFEST" \
-            --root "$SSOT_INPUT_ROOT" \
-            --untracked-only \
+          DISCOVER_ARGS=(
+            discover
+            --manifest "$SSOT_INPUT_MANIFEST"
+            --untracked-only
             --github-annotations
+          )
+          if [ -n "$SSOT_INPUT_ROOT" ]; then
+            DISCOVER_ARGS+=(--root "$SSOT_INPUT_ROOT")
+          fi
+          python3 "$CLI" "${DISCOVER_ARGS[@]}"
         fi

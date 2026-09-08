@@ -40,12 +40,17 @@ All notable changes to ssot-check are documented here. The format follows
 
 - CLI, Codex plugin, README Action example and changelog release versions now
   agree. The published v0.1.2 tag is preserved rather than rewritten.
-- Manifest-aware discovery no longer reports covered locations as untracked in
-  three cases: a manifest outside the working directory (every locator resolved
-  against the wrong base and matched nothing), a value repeated twice on one
-  line (the second occurrence never had its coverage resolved), and
-  `--github-annotations` used without `--untracked-only` (the coverage claim
-  was made without a coverage pass).
+- Manifest-aware discovery now matches physical capture spans rather than
+  inferred line/value identities. This suppresses tracked multiline and
+  display-normalized values while preserving genuinely untracked repetitions
+  on the same line.
+- GitHub annotations are relative to the runner workspace when discovery scans
+  a nested root, and the Action no longer overrides manifest-directory root
+  inference when its `root` input is omitted.
+- Plain discovery continues to honor valid `ignore_paths` from an auto-loaded
+  draft manifest even before that manifest has a complete `facts` section.
+- `--github-annotations` can no longer be used without `--untracked-only`, so
+  the coverage claim in an annotation is always backed by a coverage pass.
 - `discover --untracked-only` warns on stderr when no manifest locator resolves
   under the scanned root, so a misconfigured root is distinguishable from a
   repository with nothing curated.
