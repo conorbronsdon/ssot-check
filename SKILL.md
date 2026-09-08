@@ -1,131 +1,107 @@
 ---
 name: ssot-check
-description: Single-source-of-truth drift auditor for docs-heavy repos; wraps a deterministic CLI. Use when asked to "check for drift," "find copies of this number," "audit docs for stale facts," or "set up an SSOT manifest."
-argument-hint: "[discover|check|explain <fact>]"
+description: Audit documentation for copied-fact drift, missing SSOT pointers, and disconnected setup guides across repos. Use for stale facts, orphaned handoffs, unclear ownership, or an SSOT manifest.
+argument-hint: "[discover|check|explain <fact>|pointers]"
 ---
 
-# ssot-check — Fact-Copy Drift Auditor
+# SSOT Check
 
-Documentation-heavy repos repeat facts. A price lives in `pricing.md`, then gets
-hand-copied into a media kit, a landing page, and a README. Someone updates the
-price. The copies drift. This skill wraps `ssot_check.py`, a stdlib-only CLI that
-records canonical locations in a `.ssot.yaml` manifest and verifies every copy on
-each run.
+Audit both ways documentation loses its source of truth: copied values drift,
+and useful source documents become disconnected from the places readers start.
+Use the mode that matches the request. Do not invent a numeric manifest for a
+routing problem.
 
-The CLI does the deterministic work (regex extraction, comparison, exit codes).
-This skill adds the judgment: helping a human curate a manifest from `discover`
-output, and interpreting `check` results.
+## Choose a mode
 
-**Invocation:** model-invocable. The CLI never edits docs or the manifest, and
-never modifies any working tree — the audited repo's or a sibling's. Its one
-piece of state-changing behavior is the opt-in `--fetch`, which runs `git fetch`
-in a sibling clone; see Check Mode. Writing `.ssot.yaml` is human-gated: propose,
-wait for approval, then write. Content fixes for drift are proposed as diffs,
-never auto-applied.
+Use the mode named in the invocation (`$ARGUMENTS` in Claude), or infer it from
+the user's task when no mode was supplied.
 
-## When to Use
+- **check** (default for a fact-drift request): compare the existing manifest's
+  canonical values and copies with the CLI.
+- **discover**: propose drift-prone facts for a new or expanded manifest.
+- **explain NAME**: inspect one fact's canonical value and copies.
+- **pointers**: trace documentation ownership and access routes using
+  [the pointer audit](references/pointer-audit.md). This is an agent workflow,
+  not a `ssot_check.py` subcommand. Use it even when there are no copied numbers.
 
-- **Discover**: first run on a repo, or after adding a doc surface (a media kit,
-  a landing page, a pricing page).
-- **Check**: before commits that touch docs, as a pre-commit habit, or any time a
-  canonical value changed.
-- **Explain**: to see one fact's canonical value and every copy at a glance.
+The CLI performs deterministic extraction and comparison. It does not check
+whether a reader can find a setup guide, whether a linked service works, or
+whether an integration is configured in another checkout. A green fact check
+establishes none of those things. A mixed request can need both modes.
 
-## When NOT to Use
+## Execution and authorization
 
-- A repo with no duplicated facts — nothing to drift.
-- Values that legitimately differ per file (dated snapshot series, goal targets
-  vs. current numbers). Those are not copies; tracking them produces false
-  positives.
+The CLI never edits docs, manifests, or working trees. Its only opt-in mutation
+is `check --fetch` / `explain --fetch`, which runs `git fetch` in sibling repos
+and updates their remote-tracking refs, `FETCH_HEAD`, and object store. It does
+not pull, rebase, reset, or move their working trees or local branches.
 
-## Arguments
+For an audit-only request, report proposed fixes. When the user explicitly asks
+to fix the docs or manifest, apply reviewable edits within that authorized scope
+using the normal editing workflow; do not ask again for the same permission.
+Keep changes in each owning repo, preserve unrelated work, and verify the diff.
+Authorization to repair docs does not authorize credential rotation, permission
+changes, messages, deployments, or changes in additional repos outside the task.
 
-`$ARGUMENTS` selects the mode:
+Resolve `ssot_check.py` relative to this skill's installed directory. In Claude,
+`${CLAUDE_SKILL_DIR}` can provide that directory; other runtimes should use the
+actual skill path. Run against the user's target repo, not the installation.
+Do not edit an installed skill when its maintained source repo is available.
+For the shell examples, set `SKILL_DIR` and `TARGET_REPO` to those resolved
+absolute paths. Use the requested manifest path if it differs from `.ssot.yaml`.
 
-- `discover` → run discovery and help curate a manifest (below).
-- `check` (or empty) → run `check` and interpret the report.
-- `explain <fact>` → run `explain` for one fact.
+## Discover
 
-Find the CLI at `${CLAUDE_SKILL_DIR}/ssot_check.py`. No command writes a file
-anywhere, or modifies any working tree. The single exception to "reads only" is
-`check --fetch` / `explain --fetch`, which updates a sibling repo's
-remote-tracking refs; it is off unless you pass it.
+1. Read an existing `.ssot.yaml` before proposing additions. Preserve its curated
+   scope; do not replace it with discovery output. If there is no manifest, start
+   with the user's requested surfaces.
+2. Run `python3 "$SKILL_DIR/ssot_check.py" discover --root "$TARGET_REPO"`.
+   It scans prose for repeated numbers, amounts, percentages, versions and
+   freshness wording. It writes no manifest.
+3. Curate the findings. Use the source named by the repo's contract or owner
+   documentation, then inspect the actual source. A marketing copy is not
+   canonical unless ownership was explicitly delegated to it. Do not treat
+   historical snapshots, goals, rounded summaries, or intentionally simplified
+   downstream material as exact copies.
+4. Draft a fact with `name`, `canonical` (`file`, one-capture-group `pattern`),
+   `copies`, `type`, and a useful `note`. See the [manifest reference](README.md)
+   and [example](.ssot.example.yaml). Explain any intentional rounding.
+5. Apply the authorization rule above, then validate and check the manifest.
 
-## Discover Mode (proposing a manifest)
+## Check and explain
 
-1. **Confirm there is no `.ssot.yaml` yet.** If one exists, ask whether to extend
-   it or just run check mode.
-2. **Run the CLI to get candidates:**
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/ssot_check.py discover --root .
-   ```
-   It scans prose files (md/html/txt/rst) for repeated distinctive numbers, `$`
-   amounts, percentages, x.y.z versions, and "as of/currently/over N" phrasing,
-   then prints LIVE DRIFT CANDIDATES, PROPOSED FACTS, and a DISCARDED count. It
-   never writes the manifest.
-3. **Curate with judgment the CLI can't apply.** For each proposed fact, decide
-   the canonical: prefer a file the repo's `CLAUDE.md`/`README` names as source of
-   truth, then an auto-generated data file, then an analytics file, then an index
-   README. Marketing copies (media kits, landing pages) are almost never
-   canonical unless the repo's docs explicitly delegate the surface to them. For a
-   count that only grows (followers, downloads), the lowest value is the suspect —
-   don't let the canonical-file heuristic override that.
-4. **Draft `.ssot.yaml`.** Give each fact a kebab-case `name`, a `canonical`
-   `{file, pattern}`, a `copies[]` list, and a `type` (string|integer|currency|
-   semver|date). Add a `note` for counting conventions. See README.md for the
-   manifest reference and `.ssot.example.yaml` for an annotated template.
-5. **Lead with live drift, then present the draft. Write the manifest only after
-   explicit approval.** Then offer to run check mode.
+```sh
+python3 "$SKILL_DIR/ssot_check.py" check --manifest "$TARGET_REPO/.ssot.yaml" --root "$TARGET_REPO"
+python3 "$SKILL_DIR/ssot_check.py" explain FACT --manifest "$TARGET_REPO/.ssot.yaml" --root "$TARGET_REPO"
+```
 
-## Check Mode (every subsequent run)
+`--json` produces machine-readable output. For `check`, exit `0` means tracked
+facts match, `1` means drift or staleness, and `2` means a manifest/configuration
+error. `explain` returns `0` for an existing valid fact even when its copies
+drift; use `check` as a gate. `--root` resolves file paths; `--manifest` selects
+the manifest independently of the shell working directory.
+Without `--fetch`, cross-repo reads describe the local working trees. With it,
+reads use the selected remote-tracking ref. Neither is automatically proof of a
+fresh default branch: inspect the reported checkout/ref and fetch result.
 
-1. **Run:**
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/ssot_check.py check
-   ```
-   Exit codes: `0` all in sync, `1` drift or staleness found, `2` manifest/config
-   error. Add `--json` for machine-readable output. Add `--fetch` to compare
-   cross-repo copies against the sibling's remote instead of its working tree —
-   this runs `git fetch` in that repo, so it makes a network call and updates
-   that repo's remote-tracking refs and `FETCH_HEAD`. It never pulls, rebases,
-   or touches the sibling's working tree, and it is off by default. Without it,
-   the sibling's working tree is read as-is. Either way, a value that can't be
-   established is reported UNVERIFIED, not guessed.
-2. **Interpret the report:**
-   - **DRIFTED** — a copy no longer matches its canonical. Report the canonical
-     value, the copy value, and `file:line`. A `(canonical suspect)` tag means the
-     copy is numerically higher on a monotonic count — confirm the live value
-     before proposing an edit that would regress the copy.
-   - **CANONICAL MOVED** — the canonical pattern no longer matches. The manifest
-     is stale; propose an updated pattern or path.
-   - **STALE MANIFEST ENTRY** — a copy pattern no longer matches (reworded or
-     removed). Propose a manifest update.
-   - **STALE CANONICAL (freshness)** — the canonical file hasn't been edited
-     within `max_age_days`. Ping the owner.
-   - **UNVERIFIED** — a cross-repo copy couldn't be read (missing file, or
-     `--fetch` against a sibling with no remote-tracking ref). Report, don't
-     guess. A value labelled `fetch failed; local mirror may be stale` came
-     from refs already on disk because the fetch didn't succeed — treat its
-     age as unknown.
-3. **Propose fixes, one fact at a time, with the exact diff. Apply only after
-   approval.** Drifted copies get content edits; CANONICAL MOVED / STALE ENTRY get
-   manifest edits. Never edit a sibling tree — flag the edit as landing in the
-   sibling repo with its own commit and deploy path.
+Interpret the result before editing:
 
-## Design Principles
+- **DRIFTED:** show the canonical and copy locations. For a monotonic count,
+  `canonical suspect` means the higher copy may be fresher; verify before
+  regressing it.
+- **CANONICAL MOVED / STALE MANIFEST ENTRY:** inspect whether the source moved
+  or the extraction rule became stale. Repair the locator, not a guessed value.
+- **STALE CANONICAL:** report the freshness threshold and owner; a date alone
+  does not establish that the fact is wrong.
+- **UNVERIFIED:** state what could not be read or established. A failed fetch
+  can leave stale refs on disk. Do not silently treat them as fresh evidence.
 
-- **One canonical, everything else is a copy.** The manifest encodes that.
-- **Propose, never auto-apply.** Drift is reported with exact diffs; edits wait
-  for approval.
-- **Deterministic.** No fuzzy matching — a mismatch always means something is
-  wrong. Ambiguity is surfaced, not silently resolved.
-- **Fast enough for a pre-commit habit.** File reads and regex matches; seconds.
+Read actual files, make authorized fixes in their owning repos, and re-run the
+relevant checks. State what the check covers and what remains unverified.
 
-## Cross-references
+## Resources
 
-- `README.md` — problem statement, quickstart, manifest and CLI reference, the
-  YAML-subset limits, hook and Action setup.
-- `.ssot.example.yaml` — annotated manifest template.
-- `schema/ssot.schema.json` — formal manifest schema for editors and CI.
-- `hooks/pre-commit` — sample pre-commit hook.
-- `action.yml` — GitHub Action that fails a build on drift.
+- [Pointer audit](references/pointer-audit.md): entry points, owners, worktrees,
+  credential-location metadata, redirects and verification boundaries.
+- [README](README.md): CLI, YAML subset, install and hook/Action usage.
+- [Schema](schema/ssot.schema.json) and [example manifest](.ssot.example.yaml).

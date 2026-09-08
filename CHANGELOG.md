@@ -4,6 +4,21 @@ All notable changes to ssot-check are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Agent-level pointer audit for disconnected setup guides, cross-repo ownership,
+  stale worktrees and configuration-versus-access evidence. Includes a fictional
+  broken-route case and a no-change control for independent behavioral evaluation.
+- Pointer-mode discovery in the Codex adapter and full-package install guidance.
+
+### Changed
+
+- The skill now distinguishes audit-only requests from explicitly authorized
+  fixes, preserving scope without asking again for an already-approved edit.
+  CLI commands and their opt-in `--fetch` boundary are unchanged.
+
 ## [0.1.1] — 2026-08-03
 
 No behavior change to `--fetch`. This release fixes documentation that

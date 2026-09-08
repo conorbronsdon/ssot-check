@@ -1,7 +1,7 @@
 ---
 name: ssot-check
 license: MIT
-description: Find duplicated facts and report documentation drift. Use when asked to check documentation drift or curate an SSOT manifest.
+description: Audit copied facts, missing SSOT pointers, and disconnected setup guides. Use for documentation drift, cross-repo ownership, orphaned handoffs, or an SSOT manifest.
 ---
 
 # SSOT Check
@@ -14,4 +14,5 @@ as the working directory; do not modify the installed plugin.
 In those instructions, `${CLAUDE_SKILL_DIR}` means the plugin root in Codex.
 Use the absolute path to its `ssot_check.py`, with a Python 3 interpreter.
 Do not assume a Claude environment variable exists. Preserve the approval
-requirement for manifest edits and the opt-in boundary for `--fetch`.
+boundary for edits and the opt-in boundary for `--fetch`. The `pointers` mode is
+an agent workflow, not a CLI subcommand; read its reference from the plugin root.

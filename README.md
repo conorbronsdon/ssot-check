@@ -220,8 +220,18 @@ around the CLI. The CLI does the deterministic work; the skill adds judgment —
 helping a human curate a manifest from `discover` output and interpreting a
 `check` report. The CLI never edits docs or the manifest; the only state it can
 change is a sibling repo's remote-tracking refs, under `--fetch`.
-Writing `.ssot.yaml` and applying fixes are human-gated (propose, approve, then
-write). Drop the repo (or `SKILL.md` plus `ssot_check.py`) into `.claude/skills/`.
+For audit-only requests, the skill proposes fixes. An explicit request to fix
+the docs or manifest authorizes scoped, reviewable edits; it does not change the
+CLI's read-only behavior or authorize unrelated external actions.
+
+The skill also supports **pointers**, an agent workflow for disconnected setup
+guides and cross-repo ownership. It traces the reader's entry point to the
+maintained guide, checks checkout/worktree context, and separates configuration
+from verified service access. This is not a CLI subcommand or a new guarantee
+from a green `check`. See [the pointer audit](references/pointer-audit.md).
+
+Install the whole repository into the skill directory so its references and CLI
+remain available. Keep an installed copy separate from the source checkout.
 
 ## Pre-commit hook
 
@@ -257,6 +267,12 @@ jobs:
 python3 -m unittest discover tests   # stdlib only; no install step
 ```
 
+
+For skill changes, run the [fictional pointer-audit task](tests/fixtures/pointer-audit.md)
+in a separate tool-free model context with only the named skill/reference/fixture
+files. Keep the [evaluation rubric](tests/pointer-audit-rubric.md) out of that
+context and use it afterward to inspect the actual proposed edits. Evaluate the
+broken-route and no-change cases separately from the CLI unit suite.
 
 ## Disclaimer
 
