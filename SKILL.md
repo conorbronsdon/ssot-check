@@ -13,6 +13,9 @@ routing problem.
 
 ## Choose a mode
 
+Use the mode named in the invocation (`$ARGUMENTS` in Claude), or infer it from
+the user's task when no mode was supplied.
+
 - **check** (default for a fact-drift request): compare the existing manifest's
   canonical values and copies with the CLI.
 - **discover**: propose drift-prone facts for a new or expanded manifest.
