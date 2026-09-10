@@ -6,6 +6,18 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- Square plugin logo and composer icon in `assets/icon.png`, referenced from
+  `.codex-plugin/plugin.json` for marketplace uploads.
+- [Privacy policy](docs/privacy.md) describing local processing, host and Git
+  provider boundaries, retention, and user controls.
+
+### Changed
+
+- Marketplace subtitle shortened to the portal's 30-character limit; listing
+  metadata includes the website, privacy policy, and starter prompts.
+
 ## [0.1.3] — 2026-09-08
 
 ### Added
