@@ -18,7 +18,7 @@
     "displayName": "SSOT Check",
     "shortDescription": "Check documentation drift",
     "longDescription": "Check documentation for copied facts that have gone stale. SSOT Check compares values against a curated source-of-truth manifest, reports exact file locations, and helps discover copies the manifest does not yet track. It also traces missing documentation pointers and unclear ownership across repositories. Audits propose fixes; requests to repair documentation authorize scoped edits. The bundled Python CLI requires Python 3.9 or later and has no third-party dependencies.",
-    "developerName": "Conor Michael Bronsdon",
+    "developerName": "Conor Bronsdon",
     "category": "Developer Tools",
     "capabilities": [
       "Read",
