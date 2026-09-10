@@ -16,7 +16,7 @@ All notable changes to ssot-check are documented here. The format follows
 ### Changed
 
 - Marketplace subtitle shortened to the portal's 30-character limit; listing
-  metadata includes the website, privacy policy, MIT license, and starter prompts.
+  metadata includes the website, privacy policy, and starter prompts.
 
 ## [0.1.3] — 2026-09-08
 

@@ -32,7 +32,6 @@
     "composerIcon": "./assets/icon.png",
     "logo": "./assets/icon.png",
     "websiteURL": "https://github.com/conorbronsdon/ssot-check",
-    "privacyPolicyURL": "https://github.com/conorbronsdon/ssot-check/blob/main/docs/privacy.md",
-    "termsOfServiceURL": "https://github.com/conorbronsdon/ssot-check/blob/main/LICENSE"
+    "privacyPolicyURL": "https://github.com/conorbronsdon/ssot-check/blob/main/docs/privacy.md"
   }
 }
