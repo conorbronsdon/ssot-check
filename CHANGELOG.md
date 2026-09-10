@@ -6,8 +6,18 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+## [0.1.3] — 2026-09-08
+
 ### Added
 
+- Manifest-aware discovery via `discover --manifest PATH --untracked-only`,
+  which suppresses occurrences already represented by a curated manifest.
+- Advisory GitHub Actions annotations for uncovered discovery candidates, and
+  an opt-in `discover: warn` Action input. Discovery findings never fail a
+  build — reported candidates exit `0` — and deterministic `check` remains the
+  gate.
+- A repository `.ssot.yaml` and CI self-check so ssot-check verifies its own
+  release metadata and discovery coverage.
 - Agent-level pointer audit for disconnected setup guides, cross-repo ownership,
   stale worktrees and configuration-versus-access evidence. Includes a fictional
   broken-route case and a no-change control for independent behavioral evaluation.
@@ -15,9 +25,55 @@ All notable changes to ssot-check are documented here. The format follows
 
 ### Changed
 
+- **Breaking (Action):** the `root` input now defaults to empty, so an omitted
+  `root` lets the CLI infer the manifest's directory — matching the input's
+  long-documented default and the behavior of `check`/`explain`. Previously the
+  Action always passed `--root .`. If your manifest is not at the repository
+  root and its `file:` paths are relative to that root, set `root: .`
+  explicitly to keep the old behavior; without it `check` reports
+  `CANONICAL MOVED` and fails the build.
+- **`check`, `explain` and discovery now report the line of the captured
+  value** rather than the line the match started on. These differ only when a
+  pattern spans lines, where the reported location moves from the pattern's
+  first line to the value's. The reported `file:line` appears in the text
+  report and in `--json`.
 - The skill now distinguishes audit-only requests from explicitly authorized
   fixes, preserving scope without asking again for an already-approved edit.
   CLI commands and their opt-in `--fetch` boundary are unchanged.
+- `discover --root` now defaults to the manifest's directory, matching `check`
+  and `explain`, instead of the working directory.
+- An explicitly passed `discover --manifest` that is missing, unparseable or
+  schema-invalid is now a configuration error (exit `2`). Previously `discover`
+  swallowed it and silently dropped the manifest's `ignore_paths`.
+- `discover --github-annotations` now requires `--untracked-only`, since its
+  annotation text asserts that an occurrence is untracked.
+
+### Fixed
+
+- CLI, Codex plugin, README Action example and changelog release versions now
+  agree. The published v0.1.2 tag is preserved rather than rewritten.
+- Manifest-aware discovery now matches physical capture spans rather than
+  inferred line/value identities. This suppresses tracked multiline and
+  display-normalized values while preserving genuinely untracked repetitions
+  on the same line.
+- GitHub annotations are relative to the runner workspace (`GITHUB_WORKSPACE`,
+  falling back to the working directory) when discovery scans a nested root.
+  They previously carried scan-root-relative paths, which GitHub could not
+  resolve to a file in the checkout.
+- Plain discovery continues to honor valid `ignore_paths` from an auto-loaded
+  draft manifest even before that manifest has a complete `facts` section.
+- `--github-annotations` can no longer be used without `--untracked-only`, so
+  the coverage claim in an annotation is always backed by a coverage pass.
+- `discover --untracked-only` warns on stderr when no manifest locator resolves
+  under the scanned root, so a misconfigured root is distinguishable from a
+  repository with nothing curated.
+
+## [0.1.2] — 2026-09-02
+
+### Added
+
+- Initial GitHub Actions Marketplace release of the dependency-free composite
+  Action, with manifest, root, fetch and JSON inputs.
 
 ## [0.1.1] — 2026-08-03
 
@@ -91,5 +147,7 @@ GitHub Action.
   detection, exit codes, discover heuristics) with fixtures.
 - `.github/workflows/test.yml` — CI running the suite on push and PR.
 
+[0.1.3]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.3
+[0.1.2]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.2
 [0.1.1]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.1
 [0.1.0]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.0

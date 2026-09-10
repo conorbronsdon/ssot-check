@@ -12,7 +12,7 @@ inputs:
   root:
     description: "Repo root for resolving relative paths (default: manifest directory)."
     required: false
-    default: "."
+    default: ""
   fetch:
     description: >-
       For cross-repo copies, run `git fetch` in the sibling repo and compare
@@ -25,6 +25,14 @@ inputs:
     description: "Emit machine-readable JSON instead of the text report."
     required: false
     default: "false"
+  discover:
+    description: >-
+      Optional manifest-aware discovery after a successful check. Set to
+      `warn` to annotate repeated facts and live-drift candidates that are not
+      covered by the manifest; `off` disables it. Discovery is heuristic and
+      never fails the step.
+    required: false
+    default: "off"
 
 runs:
   using: "composite"
@@ -32,12 +40,46 @@ runs:
     # Checkout is assumed to have run already in the calling workflow.
     - name: Run ssot-check
       shell: bash
+      env:
+        SSOT_INPUT_MANIFEST: ${{ inputs.manifest }}
+        SSOT_INPUT_ROOT: ${{ inputs.root }}
+        SSOT_INPUT_FETCH: ${{ inputs.fetch }}
+        SSOT_INPUT_JSON: ${{ inputs.json }}
+        SSOT_INPUT_DISCOVER: ${{ inputs.discover }}
       run: |
         CLI="${GITHUB_ACTION_PATH}/ssot_check.py"
-        ARGS=(check --manifest "${{ inputs.manifest }}" --root "${{ inputs.root }}")
-        if [ "${{ inputs.fetch }}" = "true" ]; then ARGS+=(--fetch); fi
-        if [ "${{ inputs.json }}" = "true" ]; then ARGS+=(--json); fi
+
+        # Validate inputs before the check runs, so a typo fails immediately
+        # instead of after a full audit. Normalize case and the boolean-ish
+        # spellings a workflow's YAML may hand us for an unquoted `off`.
+        DISCOVER="${SSOT_INPUT_DISCOVER,,}"
+        case "$DISCOVER" in
+          ""|off|false) DISCOVER=off ;;
+          warn|true)    DISCOVER=warn ;;
+          *)
+            echo "Invalid discover input: expected 'off' or 'warn'." >&2
+            exit 2
+            ;;
+        esac
+
+        ARGS=(check --manifest "$SSOT_INPUT_MANIFEST")
+        if [ -n "$SSOT_INPUT_ROOT" ]; then ARGS+=(--root "$SSOT_INPUT_ROOT"); fi
+        if [ "$SSOT_INPUT_FETCH" = "true" ]; then ARGS+=(--fetch); fi
+        if [ "$SSOT_INPUT_JSON" = "true" ]; then ARGS+=(--json); fi
         echo "Running: python3 ssot_check.py ${ARGS[*]}"
         python3 "$CLI" "${ARGS[@]}"
         # ssot_check.py exits 1 on drift and 2 on manifest error; either fails
         # the step (and the build) because bash propagates the exit code.
+
+        if [ "$DISCOVER" = "warn" ]; then
+          DISCOVER_ARGS=(
+            discover
+            --manifest "$SSOT_INPUT_MANIFEST"
+            --untracked-only
+            --github-annotations
+          )
+          if [ -n "$SSOT_INPUT_ROOT" ]; then
+            DISCOVER_ARGS+=(--root "$SSOT_INPUT_ROOT")
+          fi
+          python3 "$CLI" "${DISCOVER_ARGS[@]}"
+        fi

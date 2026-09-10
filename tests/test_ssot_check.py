@@ -1,6 +1,7 @@
 """Unit tests for ssot_check. Run: python3 -m unittest discover tests"""
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -629,6 +630,19 @@ class FreshnessTests(unittest.TestCase):
 
 # --------------------------------------------------------------------------- #
 class DiscoverTests(unittest.TestCase):
+    def _price_manifest(self):
+        return sc.parse_manifest(textwrap.dedent("""\
+            facts:
+              - name: pro-price
+                type: currency
+                canonical:
+                  file: pricing.md
+                  pattern: 'Pro plan: \\$([\\d,]+)'
+                copies:
+                  - file: README.md
+                    pattern: 'costs \\$([\\d,]+)'
+            """))
+
     def test_proposes_repeated_value(self):
         tree = os.path.join(FIXTURES, "discover_tree")
         result = sc.discover(tree)
@@ -653,12 +667,235 @@ class DiscoverTests(unittest.TestCase):
             for occ in p["occurrences"]:
                 self.assertNotIn("vendor/", occ["file"])
 
+    def test_manifest_coverage_reports_only_new_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            write(os.path.join(tmp, "launch.md"), "Starts at $49 today.\n")
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, self._price_manifest())
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            prices = [p for p in uncovered["proposals"]
+                      if p["value"] == "49"]
+            self.assertEqual(len(prices), 1)
+            self.assertEqual(prices[0]["files"], ["launch.md"])
+            self.assertEqual(uncovered["uncovered_occurrences"], 1)
+
+    def test_manifest_coverage_suppresses_fully_tracked_fact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, self._price_manifest())
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(uncovered["proposals"], [])
+            self.assertEqual(uncovered["drift"], [])
+            self.assertEqual(uncovered["uncovered_occurrences"], 0)
+
+    def test_manifest_coverage_keeps_only_untracked_live_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "88 integrations\n")
+            write(os.path.join(tmp, "README.md"), "88 integrations shipped\n")
+            write(os.path.join(tmp, "launch.md"), "90 integrations today\n")
+            manifest = sc.parse_manifest(textwrap.dedent("""\
+                facts:
+                  - name: integration-count
+                    type: integer
+                    canonical:
+                      file: pricing.md
+                      pattern: '(\\d+) integrations'
+                    copies:
+                      - file: README.md
+                        pattern: '(\\d+) integrations'
+                """))
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, manifest)
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(len(uncovered["drift"]), 1)
+            self.assertEqual(uncovered["drift"][0]["values"], ["88", "90"])
+            self.assertEqual(uncovered["drift"][0]["files"], ["launch.md"])
+
+    def test_repeated_value_on_one_line_reports_later_occurrence(self):
+        # A locator covers only its first match. A second value on the same
+        # line is a distinct occurrence and must remain visible to discovery.
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"),
+                  "Pro plan: $49 per seat, or $49 billed annually.\n")
+            write(os.path.join(tmp, "README.md"), "The Pro plan costs $49.\n")
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, self._price_manifest())
+
+            for group in result["proposals"] + result["drift"]:
+                for occ in group["occurrences"]:
+                    self.assertIn("covered_by", occ,
+                                  f"{occ['file']}:{occ['line']} unresolved")
+
+            uncovered = sc.filter_uncovered_discovery(result)
+            self.assertEqual(len(uncovered["proposals"]), 1)
+            self.assertEqual(uncovered["proposals"][0]["files"],
+                             ["pricing.md"])
+            self.assertEqual(uncovered["uncovered_occurrences"], 1)
+
+    def test_manifest_coverage_uses_capture_line_for_multiline_locator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan:\n$49\n")
+            write(os.path.join(tmp, "README.md"),
+                  "The Pro plan costs:\n$49\n")
+            manifest = sc.parse_manifest(textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: integer
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Pro plan:\\s*\\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'costs:\\s*\\$([\\d,]+)'
+                """))
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, manifest)
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(uncovered["proposals"], [])
+            self.assertEqual(uncovered["uncovered_occurrences"], 0)
+
+    def test_manifest_coverage_matches_raw_capture_not_discovery_display(self):
+        cases = [
+            ("integer", "SLA: 99%\n", "Uptime is 99%\n",
+             r"SLA:\s*([\d]+)", r"Uptime is\s*([\d]+)"),
+            ("string", "Audience: 1,200 users\n",
+             "Trusted by 1,200 users\n", r"Audience:\s*([\d,]+)",
+             r"Trusted by\s*([\d,]+)"),
+            ("string", "Price: $5k\n", "It costs $5k\n",
+             r"Price:\s*(\$[\d]+k)", r"costs\s*(\$[\d]+k)"),
+        ]
+        for index, (ftype, canonical, copy, cpattern, pattern) in \
+                enumerate(cases):
+            with self.subTest(ftype=ftype, canonical=canonical):
+                with tempfile.TemporaryDirectory() as tmp:
+                    write(os.path.join(tmp, "a.md"), canonical)
+                    write(os.path.join(tmp, "b.md"), copy)
+                    manifest = sc.parse_manifest(textwrap.dedent(f"""\
+                        facts:
+                          - name: normalization-{index}
+                            type: {ftype}
+                            canonical:
+                              file: a.md
+                              pattern: '{cpattern}'
+                            copies:
+                              - file: b.md
+                                pattern: '{pattern}'
+                        """))
+
+                    result = sc.discover(tmp)
+                    sc.add_manifest_coverage(tmp, result, manifest)
+                    uncovered = sc.filter_uncovered_discovery(result)
+
+                    self.assertEqual(uncovered["proposals"], [])
+                    self.assertEqual(uncovered["uncovered_occurrences"], 0)
+
+    def test_manifest_capture_must_contain_entire_discovered_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "a.md"), "Version: v1.2.3\n")
+            write(os.path.join(tmp, "b.md"), "Version: v1.2.3\n")
+            manifest = sc.parse_manifest(textwrap.dedent("""\
+                facts:
+                  - name: major-version
+                    type: integer
+                    canonical:
+                      file: a.md
+                      pattern: 'Version: v(\\d+)'
+                    copies:
+                      - file: b.md
+                        pattern: 'Version: v(\\d+)'
+                """))
+
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, manifest)
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(uncovered["uncovered_occurrences"], 2)
+            self.assertEqual(uncovered["proposals"][0]["value"], "1.2.3")
+
+    def test_same_physical_value_is_deduplicated_across_detectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "a.md"), "Currently 100 users\n")
+            write(os.path.join(tmp, "b.md"), "Currently 100 users\n")
+
+            result = sc.discover(tmp)
+            uncovered = sc.filter_uncovered_discovery(result)
+
+            self.assertEqual(uncovered["uncovered_occurrences"], 2)
+            self.assertEqual(len(uncovered["proposals"][0]["occurrences"]), 2)
+
+    def test_coverage_counts_resolved_locators(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, self._price_manifest())
+            self.assertEqual(result["manifest_locators"], 2)
+
+    def test_coverage_reports_zero_locators_when_paths_miss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            manifest = sc.parse_manifest(textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: currency
+                    canonical:
+                      file: nowhere/pricing.md
+                      pattern: 'Pro plan: \\$([\\d,]+)'
+                    copies:
+                      - file: nowhere/README.md
+                        pattern: 'costs \\$([\\d,]+)'
+                """))
+            result = sc.discover(tmp)
+            sc.add_manifest_coverage(tmp, result, manifest)
+            self.assertEqual(result["manifest_locators"], 0)
+
+    def test_github_annotations_are_advisory_and_deduplicated(self):
+        occurrence = {
+            "file": "docs/launch.md", "line": 3, "value": "90",
+            "_start": 20, "_end": 22, "_col": 7, "_end_column": 9,
+        }
+        result = {
+            "proposals": [{
+                "value": "90", "occurrences": [occurrence],
+            }],
+            "drift": [{
+                "unit": "integration", "values": ["88", "90"],
+                "occurrences": [occurrence],
+            }],
+        }
+        with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) \
+                as output:
+            sc.render_discover_github(result)
+
+        report = output.getvalue()
+        self.assertEqual(report.count("::warning"), 1)
+        self.assertIn("file=docs/launch.md,line=3,col=7,endColumn=9", report)
+        self.assertIn("advisory only", report)
+
 
 # --------------------------------------------------------------------------- #
 class CLIExitCodeTests(unittest.TestCase):
-    def _run(self, args, cwd):
+    def _run(self, args, cwd, env=None):
+        if env is None:
+            # GitHub-hosted runners export their real checkout here. Each CLI
+            # test builds an isolated stand-in workspace under /tmp.
+            env = dict(os.environ, GITHUB_WORKSPACE=cwd)
         return subprocess.run([sys.executable, CLI] + args, cwd=cwd,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=env)
 
     def test_check_exit_codes_and_validate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -723,6 +960,215 @@ class CLIExitCodeTests(unittest.TestCase):
                   "      - file: b.md\n        pattern: '(\\d+)'\n")
             r = self._run(["validate"], tmp)
             self.assertEqual(r.returncode, 2)
+
+    def test_untracked_discovery_requires_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "README.md"), "Costs $49.\n")
+            r = self._run(["discover", "--untracked-only"], tmp)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("requires a valid SSOT manifest", r.stderr)
+
+    def test_untracked_discovery_emits_github_warning_but_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            write(os.path.join(tmp, "launch.md"), "Starts at $49 today.\n")
+            write(os.path.join(tmp, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: currency
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Pro plan: \\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'costs \\$([\\d,]+)'
+                """))
+
+            r = self._run([
+                "discover", "--manifest", ".ssot.yaml",
+                "--untracked-only", "--github-annotations",
+            ], tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("::warning file=launch.md,line=1", r.stdout)
+            self.assertNotIn("file=pricing.md", r.stdout)
+            self.assertNotIn("file=README.md", r.stdout)
+
+    def test_untracked_discovery_resolves_root_from_manifest_dir(self):
+        # Regression: discover defaulted --root to "." while check/explain
+        # default it to the manifest's directory, so a manifest outside the
+        # working directory resolved no locator and every tracked location
+        # was reported as uncovered.
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = os.path.join(tmp, "sub")
+            write(os.path.join(sub, "pricing.md"), "Pro plan: $49 a month.\n")
+            write(os.path.join(sub, "README.md"), "The Pro plan costs $49.\n")
+            write(os.path.join(sub, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: currency
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Pro plan: \\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'costs \\$([\\d,]+)'
+                """))
+
+            rc = self._run(["check", "--manifest", "sub/.ssot.yaml"], tmp)
+            self.assertEqual(rc.returncode, 0, rc.stdout + rc.stderr)
+
+            rd = self._run([
+                "discover", "--manifest", "sub/.ssot.yaml",
+                "--untracked-only", "--github-annotations",
+            ], tmp)
+            self.assertEqual(rd.returncode, 0, rd.stdout + rd.stderr)
+            self.assertNotIn("::warning", rd.stdout)
+            self.assertNotIn("no manifest locator resolved", rd.stderr)
+
+            # An explicit --root still wins over the manifest's directory.
+            re_ = self._run([
+                "discover", "--root", "sub", "--manifest", "sub/.ssot.yaml",
+                "--untracked-only", "--github-annotations",
+            ], tmp)
+            self.assertEqual(re_.returncode, 0, re_.stdout + re_.stderr)
+            self.assertNotIn("::warning", re_.stdout)
+
+    def test_github_annotations_are_relative_to_workspace_not_scan_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = os.path.join(tmp, "docs")
+            write(os.path.join(docs, "pricing.md"), "Price: $49\n")
+            write(os.path.join(docs, "README.md"), "Price: $49\n")
+            write(os.path.join(docs, "launch.md"), "Launch price: $49\n")
+            write(os.path.join(docs, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: integer
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Price:\\s*\\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'Price:\\s*\\$([\\d,]+)'
+                """))
+
+            result = self._run([
+                "discover", "--root", "docs",
+                "--manifest", "docs/.ssot.yaml", "--untracked-only",
+                "--github-annotations",
+            ], tmp)
+
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            self.assertIn("::warning file=docs/launch.md,line=1",
+                          result.stdout)
+            self.assertNotIn("::warning file=launch.md", result.stdout)
+
+    def test_github_annotations_use_workspace_when_cwd_is_nested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            docs = os.path.join(tmp, "docs")
+            write(os.path.join(docs, "pricing.md"), "Price: $49\n")
+            write(os.path.join(docs, "README.md"), "Price: $49\n")
+            write(os.path.join(docs, "launch.md"), "Launch price: $49\n")
+            write(os.path.join(docs, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: integer
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Price:\\s*\\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'Price:\\s*\\$([\\d,]+)'
+                """))
+            env = dict(os.environ, GITHUB_WORKSPACE=tmp)
+
+            result = self._run([
+                "discover", "--manifest", ".ssot.yaml", "--untracked-only",
+                "--github-annotations",
+            ], docs, env=env)
+
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            self.assertIn("::warning file=docs/launch.md,line=1",
+                          result.stdout)
+
+    def test_auto_loaded_draft_manifest_still_applies_valid_ignore_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "a.md"), "Price: $49\n")
+            write(os.path.join(tmp, "archive", "old.md"),
+                  "Old price: $49\n")
+            write(os.path.join(tmp, ".ssot.yaml"), textwrap.dedent("""\
+                ignore_paths:
+                  - archive/**
+                """))
+
+            result = self._run(["discover", "--json"], tmp)
+
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["files_scanned"], 1)
+            self.assertNotIn("archive/old.md", result.stdout)
+
+    def test_discovery_json_does_not_expose_internal_capture_offsets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "a.md"), "Price: $49\n")
+            write(os.path.join(tmp, "b.md"), "Also $49\n")
+
+            result = self._run(["discover", "--json"], tmp)
+
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            occurrence = report["proposals"][0]["occurrences"][0]
+            self.assertNotIn("_start", occurrence)
+            self.assertNotIn("_end", occurrence)
+
+    def test_github_annotations_require_untracked_only(self):
+        # Regression: the annotation text asserts an occurrence is not covered
+        # by the manifest, which only --untracked-only establishes. Standalone,
+        # it made that claim about fully covered occurrences.
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "pricing.md"), "Pro plan: $49\n")
+            write(os.path.join(tmp, "README.md"), "Pro plan costs $49\n")
+            write(os.path.join(tmp, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: currency
+                    canonical:
+                      file: pricing.md
+                      pattern: 'Pro plan: \\$([\\d,]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'costs \\$([\\d,]+)'
+                """))
+            r = self._run(["discover", "--github-annotations"], tmp)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("requires --untracked-only", r.stderr)
+            self.assertNotIn("::warning", r.stdout)
+
+    def test_untracked_discovery_warns_when_no_locator_resolves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "a.md"), "Pro plan: $49 a month.\n")
+            write(os.path.join(tmp, "b.md"), "It costs $49 a month.\n")
+            write(os.path.join(tmp, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: pro-price
+                    type: currency
+                    canonical:
+                      file: nowhere/pricing.md
+                      pattern: 'Pro plan: \\$([\\d,]+)'
+                    copies:
+                      - file: nowhere/README.md
+                        pattern: 'costs \\$([\\d,]+)'
+                """))
+            r = self._run([
+                "discover", "--manifest", ".ssot.yaml",
+                "--untracked-only", "--github-annotations",
+            ], tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("no manifest locator resolved", r.stderr)
 
 
 if __name__ == "__main__":
