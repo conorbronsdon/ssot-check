@@ -864,17 +864,17 @@ class DiscoverTests(unittest.TestCase):
             self.assertEqual(result["manifest_locators"], 0)
 
     def test_github_annotations_are_advisory_and_deduplicated(self):
+        occurrence = {
+            "file": "docs/launch.md", "line": 3, "value": "90",
+            "_start": 20, "_end": 22, "_col": 7, "_end_column": 9,
+        }
         result = {
             "proposals": [{
-                "value": "90", "occurrences": [{
-                    "file": "docs/launch.md", "line": 3, "value": "90",
-                }],
+                "value": "90", "occurrences": [occurrence],
             }],
             "drift": [{
                 "unit": "integration", "values": ["88", "90"],
-                "occurrences": [{
-                    "file": "docs/launch.md", "line": 3, "value": "90",
-                }],
+                "occurrences": [occurrence],
             }],
         }
         with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) \
@@ -883,7 +883,7 @@ class DiscoverTests(unittest.TestCase):
 
         report = output.getvalue()
         self.assertEqual(report.count("::warning"), 1)
-        self.assertIn("file=docs/launch.md,line=3", report)
+        self.assertIn("file=docs/launch.md,line=3,col=7,endColumn=9", report)
         self.assertIn("advisory only", report)
 
 

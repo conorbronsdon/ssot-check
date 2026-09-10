@@ -924,10 +924,13 @@ def discover(root, ignore_paths=None):
         def add(value, raw, kind, m, unit, capture=1):
             start, end = m.span(capture)
             line = content.count("\n", 0, start) + 1
+            line_start = content.rfind("\n", 0, start) + 1
             occurrences.append({
                 "value": value, "raw": raw, "kind": kind, "file": rel,
                 "line": line, "context": _context(content, m.start(), m.end()),
                 "unit": unit, "_start": start, "_end": end,
+                "_col": start - line_start + 1,
+                "_end_column": end - line_start + 1,
             })
 
         for regex, kind in _GENERIC_PATTERNS:
@@ -1013,9 +1016,7 @@ def _manifest_occurrences(root, manifest):
 
 def _occurrence_identity(occurrence):
     """Identify a discovery occurrence without conflating same-line values."""
-    if "_start" in occurrence and "_end" in occurrence:
-        return (occurrence["file"], occurrence["_start"], occurrence["_end"])
-    return (occurrence["file"], occurrence["line"], occurrence["value"])
+    return (occurrence["file"], occurrence["_start"], occurrence["_end"])
 
 
 def _span_contains(container, contained):
@@ -1341,10 +1342,11 @@ def render_discover_github(result):
             message = (f"Potential untracked drift for {drift['unit']}: "
                        f"{values}. This occurrence is not covered by the "
                        "SSOT manifest.")
-            _print("::warning file=%s,line=%s,title=%s::%s" % (
+            _print("::warning file=%s,line=%s,col=%s,endColumn=%s,title=%s::%s" % (
                 _gha_escape_property(
                     _github_annotation_file(result, occurrence)),
                 occurrence["line"],
+                occurrence["_col"], occurrence["_end_column"],
                 _gha_escape_property("Untracked SSOT drift"),
                 _gha_escape_data(message)))
             warnings += 1
@@ -1358,10 +1360,11 @@ def render_discover_github(result):
             message = (f"{proposal['value']!r} appears in multiple files, "
                        "but this occurrence is not covered by the SSOT "
                        "manifest. Add it as a copy or ignore the path.")
-            _print("::warning file=%s,line=%s,title=%s::%s" % (
+            _print("::warning file=%s,line=%s,col=%s,endColumn=%s,title=%s::%s" % (
                 _gha_escape_property(
                     _github_annotation_file(result, occurrence)),
                 occurrence["line"],
+                occurrence["_col"], occurrence["_end_column"],
                 _gha_escape_property("Untracked SSOT candidate"),
                 _gha_escape_data(message)))
             warnings += 1
