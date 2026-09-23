@@ -9,12 +9,14 @@ facts:
   - name: release-version
     type: semver
     note: >
-      Current CLI, Codex plugin, documented Action tag, and changelog release.
+      Current CLI, Codex and Claude Code plugins, documented Action tag, and changelog release.
     canonical:
       file: ssot_check.py
       pattern: '__version__\s*=\s*"([^"]+)"'
     copies:
       - file: .codex-plugin/plugin.json
+        pattern: '"version"\s*:\s*"([^"]+)"'
+      - file: .claude-plugin/plugin.json
         pattern: '"version"\s*:\s*"([^"]+)"'
       - file: README.md
         pattern: 'uses:\s*conorbronsdon/ssot-check@(v[0-9]+\.[0-9]+\.[0-9]+)'

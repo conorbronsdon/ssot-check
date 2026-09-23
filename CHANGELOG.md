@@ -10,6 +10,10 @@ All notable changes to ssot-check are documented here. The format follows
 
 - Square plugin logo and composer icon in `assets/icon.png`, referenced from
   `.codex-plugin/plugin.json` for marketplace uploads.
+- Claude Code plugin manifest in `.claude-plugin/plugin.json` and a
+  repository-local marketplace in `.claude-plugin/marketplace.json`, so
+  `/plugin marketplace add conorbronsdon/ssot-check` installs the skill. The
+  manifest version is a checked copy of `release-version`.
 - [Privacy policy](docs/privacy.md) describing local processing, host and Git
   provider boundaries, retention, and user controls.
 

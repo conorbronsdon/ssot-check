@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "ssot-check",
+  "description": "SSOT Check: find duplicated facts and documentation drift.",
+  "owner": {
+    "name": "Conor Bronsdon"
+  },
+  "plugins": [
+    {
+      "name": "ssot-check",
+      "source": "./",
+      "description": "Find duplicated facts and report documentation drift against a curated source-of-truth manifest.",
+      "category": "development",
+      "keywords": ["documentation", "drift", "single-source-of-truth"]
+    }
+  ]
+}

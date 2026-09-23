@@ -319,6 +319,22 @@ Run the skill against your target repository, not the plugin installation
 directory. Plugin installation does not install external tools or authorize
 changes to your files.
 
+## Claude Code plugin packaging
+
+The repository root is also a Claude Code plugin, with its manifest in
+[`.claude-plugin/plugin.json`](.claude-plugin/plugin.json). The same directory
+holds a single-plugin marketplace, so you can install it from Claude Code:
+
+```
+/plugin marketplace add conorbronsdon/ssot-check
+/plugin install ssot-check@ssot-check
+```
+
+The plugin installs the whole repository and exposes the `skills/` adapter,
+which reads the canonical root `SKILL.md` and runs the bundled `ssot_check.py`.
+It adds no hooks or MCP servers. As with Codex, run the skill against your
+target repository, not the plugin installation directory.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
