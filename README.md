@@ -1,5 +1,7 @@
 # ssot-check
 
+> **Maintenance mode.** This project is stable and receives security fixes. New features aren't planned, but issues and pull requests are still welcome.
+
 **Single-source-of-truth drift auditor for documentation-heavy repos.**
 
 <p align="center">
