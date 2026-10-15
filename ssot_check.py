@@ -887,6 +887,22 @@ _AGING_RE = re.compile(
     re.I)
 
 
+def _is_loopback_example(content, match):
+    """Do not propose the conventional localhost address as a copied version.
+
+    Four-component versions remain valid candidates. Even this address-shaped
+    value remains discoverable when prefixed with v or explicitly labelled as
+    a version, release or build immediately before the value on the same line.
+    This heuristic affects discovery only; manifest checks still compare it.
+    """
+    if match.group(1) != "127.0.0.1" or match.group(0).startswith("v"):
+        return False
+    line_start = content.rfind("\n", 0, match.start()) + 1
+    prefix = content[line_start:match.start()]
+    return not re.search(r"(?<![a-z0-9])(?:version|release|build)[\s*_`'\":=]*$",
+                         prefix, re.I)
+
+
 def _norm_number(raw):
     return re.sub(r"[,\s]", "", raw).rstrip("+")
 
@@ -937,6 +953,8 @@ def discover(root, ignore_paths=None):
             for m in regex.finditer(content):
                 raw = m.group(1)
                 if kind == "version":
+                    if _is_loopback_example(content, m):
+                        continue
                     value = raw
                 elif kind == "percentage":
                     value = raw + "%"
