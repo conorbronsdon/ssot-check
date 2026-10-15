@@ -6,6 +6,13 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Discovery no longer proposes conventional `127.0.0.1` loopback examples as
+  copied versions. Explicit version labels/prefixes and other four-part
+  versions still produce candidates; registered address checks still detect
+  drift. Covered by regression and complementary detection controls.
+
 ### Added
 
 - Square plugin logo and composer icon in `assets/icon.png`, referenced from

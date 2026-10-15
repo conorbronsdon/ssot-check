@@ -95,6 +95,12 @@ Exit codes (`discover`): `0` always, including when candidates are reported ·
 schema-invalid, `--untracked-only` without a valid manifest, or
 `--github-annotations` without `--untracked-only`.
 
+Discovery omits the conventional loopback address `127.0.0.1` from version
+proposals. An explicit `v127.0.0.1` or a same-line `Version:`, `Release:` or
+`Build:` label immediately before it keeps that value discoverable. Other
+four-part versions remain candidates. This heuristic does not affect explicit
+manifest checks, including checks for copied addresses.
+
 ### Statuses in a check report
 
 - **IN SYNC** — copy matches canonical.

@@ -630,6 +630,60 @@ class FreshnessTests(unittest.TestCase):
 
 # --------------------------------------------------------------------------- #
 class DiscoverTests(unittest.TestCase):
+    def test_loopback_examples_do_not_generate_version_candidates(self):
+        examples = (
+            "Connect to `http://127.0.0.1:8080/mcp`.\n"
+            "docker run -p 127.0.0.1:8080:8080 image:1.3.0\n"
+            "MCP_HTTP_ALLOWED_HOSTS=localhost:8080,127.0.0.1:8080\n"
+            "Publish the port to `127.0.0.1` rather than every interface.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("README.md", "http.md"):
+                write(os.path.join(tmp, name), examples)
+            result = sc.filter_uncovered_discovery(sc.discover(tmp))
+            self.assertEqual([p["value"] for p in result["proposals"]],
+                             ["1.3.0"])
+            self.assertEqual(result["uncovered_occurrences"], 2)
+
+    def test_explicit_loopback_shaped_versions_and_other_versions_still_warn(self):
+        for text, value in (
+            ("Use v127.0.0.1.\n", "127.0.0.1"),
+            ("Version: `127.0.0.1`\n", "127.0.0.1"),
+            ("**Version:** `127.0.0.1`\n", "127.0.0.1"),
+            ("_Release_ = **127.0.0.1**\n", "127.0.0.1"),
+            ('RELEASE = "127.0.0.1"\n', "127.0.0.1"),
+            ("Build 127.0.0.1\n", "127.0.0.1"),
+            ("Use 1.2.3.4\n", "1.2.3.4"),
+            ("Use v1.2.3\n", "1.2.3"),
+            ("Use 1.2.3.x\n", "1.2.3.x"),
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                for name in ("README.md", "guide.md"):
+                    write(os.path.join(tmp, name), text)
+                result = sc.filter_uncovered_discovery(sc.discover(tmp))
+                self.assertEqual([p["value"] for p in result["proposals"]],
+                                 [value])
+                self.assertEqual(result["uncovered_occurrences"], 2)
+
+    def test_loopback_suppression_does_not_hide_manifest_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = sc.parse_manifest(textwrap.dedent("""\
+                facts:
+                  - name: bind-address
+                    type: string
+                    canonical:
+                      file: source.md
+                      pattern: 'Bind: ([0-9.]+)'
+                    copies:
+                      - file: README.md
+                        pattern: 'Bind: ([0-9.]+)'
+                """))
+            write(os.path.join(tmp, "source.md"), "Bind: 127.0.0.1\n")
+            write(os.path.join(tmp, "README.md"), "Bind: 127.0.0.1\n")
+            self.assertEqual(sc.check(tmp, manifest)["summary"]["drifted"], 0)
+            write(os.path.join(tmp, "README.md"), "Bind: 0.0.0.0\n")
+            self.assertEqual(sc.check(tmp, manifest)["summary"]["drifted"], 1)
+
     def _price_manifest(self):
         return sc.parse_manifest(textwrap.dedent("""\
             facts:
