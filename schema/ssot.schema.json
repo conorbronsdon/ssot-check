@@ -80,6 +80,11 @@
         "guard": { "$ref": "#/definitions/guard" }
       }
     },
+    "json_path": {
+      "type": "string",
+      "pattern": "^(#|[^.#]+(\\.[^.#]+)*(\\.#)?)$",
+      "description": "Dot-separated keys and list indexes into a JSON file. A final '#' reads the length of the list or object before it."
+    },
     "guard": {
       "type": "object",
       "required": ["anchors"],
@@ -96,9 +101,11 @@
     },
     "locator": {
       "type": "object",
-      "required": ["file", "pattern"],
+      "required": ["file"],
+      "oneOf": [{ "required": ["pattern"] }, { "required": ["json"] }],
       "additionalProperties": false,
       "properties": {
+        "json": { "$ref": "#/definitions/json_path" },
         "file": {
           "type": "string",
           "description": "Forward-slash path relative to repo root, or to the named repo when 'repo' is set. May escape the root (../sibling) for a cross-repo, read-only location."
@@ -115,9 +122,23 @@
     },
     "copy": {
       "type": "object",
-      "required": ["file", "pattern"],
+      "required": ["file"],
+      "oneOf": [{ "required": ["pattern"] }, { "required": ["json"] }],
       "additionalProperties": false,
       "properties": {
+        "json": { "$ref": "#/definitions/json_path" },
+        "relation": {
+          "type": "string",
+          "enum": ["equal", "floor"],
+          "default": "equal",
+          "description": "floor: the copy is a reader-facing floor that must be at or below the canonical (integer or currency facts only; not with rounding)."
+        },
+        "max_gap_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 100,
+          "description": "With relation floor: the largest percentage the floor may trail the canonical."
+        },
         "file": {
           "type": "string",
           "description": "Copy location. May be a glob (docs/*.md) for local paths."

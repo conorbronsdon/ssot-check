@@ -25,6 +25,14 @@ The project is no longer in maintenance mode; new features are being added.
   nowhere is reported as **REPO NOT FOUND** with every location tried, instead
   of as a moved canonical or an unverified copy. Exits `1`.
 - `check --json` includes a `repos` block showing how each name resolved.
+- **JSON locators.** A canonical or copy may give `json: a.b.0.c` instead of
+  `pattern`, reading a scalar from a JSON file; a final `#` segment reads the
+  length of a list or object (`episodes.#`). A missing path reports where it
+  stopped.
+- **Floors.** A copy with `relation: floor` passes when at or below the
+  canonical and, with `max_gap_pct`, within that percentage of it. Floors may
+  use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
+  **DRIFTED (floor lagging)**.
 
 ### Fixed
 

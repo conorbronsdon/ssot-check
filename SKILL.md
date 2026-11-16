@@ -82,6 +82,11 @@ absolute paths. Use the requested manifest path if it differs from `.ssot.yaml`.
      `superseded` values, and `restated: true` if every undeclared mention of
      the current value is a defect. Anchors must be words that appear on the
      same line as the value; choose them from the real occurrences.
+   - For a value in a JSON file, use `json: key.path` (a final `#` is a
+     length) instead of a regex.
+   - A rounded-down marketing figure ("80+ episodes") is a copy with
+     `relation: floor` and a `max_gap_pct`, not an excluded fact. Rounding a
+     script applies is `rounding`, not `floor`.
 5. Apply the authorization rule above, then validate and check the manifest.
 
 ## Check and explain

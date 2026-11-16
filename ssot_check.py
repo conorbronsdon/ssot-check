@@ -30,6 +30,8 @@ __version__ = "0.1.3"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
+VALID_RELATIONS = {"equal", "floor"}
+FLOOR_TYPES = {"integer", "currency"}
 CURRENCY_SYMBOLS = "$€£¥"
 
 # File extensions discover scans (prose only — code/data are out of scope here).
@@ -406,6 +408,28 @@ def validate_manifest(manifest):
                 if rnd is not None and rnd not in VALID_ROUNDING:
                     err(f"{name}.copies[{j}]: rounding {rnd!r} not one of "
                         f"{sorted(VALID_ROUNDING)}", cp, "rounding")
+                rel = cp.get("relation")
+                if rel is not None and rel not in VALID_RELATIONS:
+                    err(f"{name}.copies[{j}]: relation {rel!r} not one of "
+                        f"{sorted(VALID_RELATIONS)}", cp, "relation")
+                if rel == "floor":
+                    if ftype not in FLOOR_TYPES:
+                        err(f"{name}.copies[{j}]: relation floor needs type "
+                            f"integer or currency (fact is {ftype!r})", cp,
+                            "relation")
+                    if rnd is not None:
+                        err(f"{name}.copies[{j}]: relation floor and "
+                            "rounding cannot be combined; a floor already "
+                            "allows a lower value", cp, "rounding")
+                gap = cp.get("max_gap_pct")
+                if gap is not None:
+                    if rel != "floor":
+                        err(f"{name}.copies[{j}]: max_gap_pct needs "
+                            "relation: floor", cp, "max_gap_pct")
+                    elif not re.fullmatch(r"\d+(?:\.\d+)?", str(gap)) or \
+                            not 0 < float(gap) < 100:
+                        err(f"{name}.copies[{j}]: max_gap_pct must be a "
+                            "number between 0 and 100", cp, "max_gap_pct")
     return errors
 
 
@@ -462,9 +486,19 @@ def _check_locator(loc, where, errors, line_of, repo_names=()):
 
     if not loc.get("file"):
         err(f"{where}: missing 'file'", "file")
+    jpath = loc.get("json")
     pat = loc.get("pattern")
+    if jpath is not None and pat is not None:
+        err(f"{where}: give 'pattern' or 'json', not both", "json")
+        return
+    if jpath is not None:
+        try:
+            parse_json_path(jpath)
+        except ValueError as exc:
+            err(f"{where}: {exc}", "json")
+        return
     if not pat:
-        err(f"{where}: missing 'pattern'", "pattern")
+        err(f"{where}: missing 'pattern' (or 'json')", "pattern")
         return
     try:
         compiled = re.compile(pat)
@@ -555,6 +589,123 @@ def values_match(canonical, copy, ftype="string", rounding=None):
     except ValueError as exc:
         return False, str(exc)
     return cn == co, ""
+
+
+_MAGNITUDE = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+
+def _floor_number(value):
+    """Parse a floor's number: separators, a currency symbol, a trailing '+'
+    and a K/M/B magnitude suffix ('13.4K+' -> 13400). Floors are written for
+    readers, so the suffix is allowed here and nowhere else."""
+    v = _strip_trailing_plus(value).lstrip(CURRENCY_SYMBOLS).strip()
+    v = re.sub(r"[,_\s]", "", v)
+    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)([kKmMbB]?)", v)
+    if not m:
+        raise ValueError(f"not a number: {value!r}")
+    n = float(m.group(1)) * _MAGNITUDE.get(m.group(2).lower(), 1)
+    return n
+
+
+def compare_floor(canonical, copy, max_gap_pct=None):
+    """Check a floor copy ('80+ episodes') against the exact canonical.
+
+    A floor may never exceed the canonical (overstated), and, when
+    max_gap_pct is set, may not trail it by more than that percentage
+    (lagging). Returns (ok, direction, detail).
+    """
+    try:
+        cn, co = _floor_number(canonical), _floor_number(copy)
+    except ValueError as exc:
+        return False, None, str(exc)
+    if co > cn:
+        return False, "overstated", (f"floor {copy.strip()!r} is above the "
+                                     f"canonical {canonical.strip()!r}")
+    if max_gap_pct is not None and cn > 0:
+        gap = (cn - co) / cn * 100
+        if gap > float(max_gap_pct):
+            return False, "floor_lagging", (
+                f"floor {copy.strip()!r} is {gap:.1f}% below the canonical "
+                f"{canonical.strip()!r} (allowed {max_gap_pct}%)")
+    return True, None, ""
+
+
+# --------------------------------------------------------------------------- #
+# JSON locators. `json: a.b.0.c` reads a scalar; a final `#` segment reads the
+# length of the list or object it follows (`episodes.#`).
+# --------------------------------------------------------------------------- #
+def parse_json_path(path):
+    """Split a json path into segments. Raises ValueError when malformed."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("json path is empty")
+    segs = path.split(".")
+    for i, seg in enumerate(segs):
+        if not seg:
+            raise ValueError(f"empty segment in json path {path!r}")
+        if seg == "#" and i != len(segs) - 1:
+            raise ValueError(f"'#' (length) must be the last segment in "
+                             f"{path!r}")
+        if seg != "#" and "#" in seg:
+            raise ValueError(f"'#' must be its own segment in {path!r}")
+    return segs
+
+
+def _json_scalar(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else repr(value)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def extract_json(content, path):
+    """Return (value, line, error). The line is approximate: where the last
+    named key first appears."""
+    try:
+        node = json.loads(content)
+    except ValueError as exc:
+        return None, None, f"not valid JSON ({exc.__class__.__name__})"
+    segs = parse_json_path(path)
+    walked = []
+    for seg in segs:
+        if seg == "#":
+            if not isinstance(node, (list, dict)):
+                return None, None, f"'{'.'.join(walked)}' has no length"
+            node = len(node)
+            break
+        if isinstance(node, dict) and seg in node:
+            node = node[seg]
+        elif isinstance(node, list) and re.fullmatch(r"\d+", seg) and \
+                int(seg) < len(node):
+            node = node[int(seg)]
+        else:
+            return None, None, f"json path not found: {path} (at {seg!r})"
+        walked.append(seg)
+    value = _json_scalar(node)
+    if value is None:
+        return None, None, f"json path {path} is a list or object, not a " \
+                           "value (end it with '#' for its length)"
+    line = None
+    keys = [w for w in walked if not w.isdigit()]
+    if keys:
+        m = re.search(r'"' + re.escape(keys[-1]) + r'"\s*:', content)
+        if m:
+            line = content.count("\n", 0, m.start()) + 1
+    return value, line, None
+
+
+def extract_locator(content, loc):
+    """Return (value, line, match_count, error) for a pattern or json
+    locator. value is None when nothing was extracted."""
+    if loc.get("json") is not None:
+        value, line, error = extract_json(content, loc["json"])
+        return value, line, (1 if value is not None else 0), error
+    value, line, count = extract(content, loc["pattern"])
+    return value, line, count, None
 
 
 # --------------------------------------------------------------------------- #
@@ -1042,10 +1193,10 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
             fact_results.append(fr)
             continue
 
-        cval, cline, cmulti = extract(ccontent, canon["pattern"])
+        cval, cline, cmulti, cerr = extract_locator(ccontent, canon)
         if cval is None:
             fr["status"] = "canonical_moved"
-            fr["canonical"]["error"] = "pattern did not match"
+            fr["canonical"]["error"] = cerr or "pattern did not match"
             counts["canonical_moved"] += 1
             run_guard(fact, fr, None, allowed)
             fact_results.append(fr)
@@ -1134,14 +1285,30 @@ def _check_one_copy(root, relpath, cp, cval, ftype, monotonic, fetch,
             res["note"] = "copy file missing or unreadable"
             return res
 
-    val, line, multi = extract(content, cp["pattern"])
+    val, line, multi, xerr = extract_locator(content, cp)
     if val is None:
         res["status"] = "stale_entry"
-        res["note"] = "pattern did not match (copy reworded or removed)"
+        res["note"] = xerr or \
+            "pattern did not match (copy reworded or removed)"
         return res
     res.update({"value": val, "line": line})
     if multi > 1:
         res["warning"] = f"pattern matched {multi}x; used first"
+
+    if cp.get("relation") == "floor":
+        ok, direction, detail = compare_floor(cval, val,
+                                              cp.get("max_gap_pct"))
+        res["relation"] = "floor"
+        if ok:
+            res["status"] = "in_sync"
+        else:
+            res["status"] = "drifted"
+            res["canonical_value"] = cval
+            if direction:
+                res["direction"] = direction
+            if detail:
+                res["note"] = detail
+        return res
 
     rounding = cp.get("rounding")
     matched, detail = values_match(cval, val, ftype, rounding)
@@ -1335,7 +1502,8 @@ def _manifest_occurrences(root, manifest):
                 locators.append((concrete, cp))
 
         for relpath, locator in locators:
-            if locator.get("repo") or is_cross_repo(root, relpath):
+            if locator.get("repo") or locator.get("json") is not None or \
+                    is_cross_repo(root, relpath):
                 continue
             content = _read_file(_resolve(root, relpath))
             if content is None:
@@ -1523,8 +1691,10 @@ def render_check(result):
             for cp in f["copies"]:
                 if cp["status"] != "drifted":
                     continue
-                tag = " (canonical suspect)" if cp.get("direction") == \
-                    "canonical_suspect" else ""
+                tag = {"canonical_suspect": " (canonical suspect)",
+                       "overstated": " (floor overstates)",
+                       "floor_lagging": " (floor lagging)"}.get(
+                           cp.get("direction"), "")
                 _print(f"  - {f['name']}{tag} — canonical says "
                        f"{cp.get('canonical_value')!r}, copy says "
                        f"{cp.get('value')!r}")

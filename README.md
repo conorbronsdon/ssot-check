@@ -179,7 +179,8 @@ facts:
   reported (and exits `1`). Skipped with a note when not in a git repo.
 - **`canonical`** (required) — `{file, pattern}`. The true value and how to
   extract it.
-- **`copies`** (required, ≥1) — every other `{file, pattern}`. Optional per copy:
+- **`copies`** (required, ≥1, unless the fact has a `guard`) — every other
+  `{file, pattern}` or `{file, json}`. Optional per copy:
   - **`note`** — free text.
   - **`rounding`** — a deterministic transform applied to the *canonical* value
     before an exact compare, for copies a script intentionally rounds:
@@ -187,6 +188,10 @@ facts:
     `floor-1000-as-K` (floor to thousands; compare against a value written as
     `NNN`, e.g. canonical `156703` matches copy `156`). Not fuzzy — a mismatch
     still means something is wrong (usually sync lag).
+  - **`relation: floor`** — the copy is a reader-facing floor (`80+ episodes`,
+    `13K+ followers`), not the exact value. See [floors](#floors).
+  - **`max_gap_pct`** — with `relation: floor`, how far below the canonical
+    the floor may trail before it is reported.
 
 ### Patterns
 
@@ -197,6 +202,58 @@ facts:
   attribute and letting `\s*` cross the break. If a pattern matches more than
   once, the first match is used and a warning is emitted.
 - Put regexes in **single-quoted** YAML strings so backslashes survive.
+
+### JSON locators
+
+A canonical or copy in a JSON file can name a key path instead of a regex:
+
+```yaml
+facts:
+  - name: episode-count
+    type: integer
+    canonical:
+      file: docs/data.json
+      json: episodes_published        # a scalar value
+    copies:
+      - file: docs/episodes.json
+        json: episodes.#              # '#' = length of the list or object
+      - file: README.md
+        pattern: 'Total Episodes:\*\* (\d+)'
+```
+
+The path is dot-separated keys and list indexes (`stats.platforms.0.views`).
+A final `#` reads the length of the list or object before it. The value must
+be a string, number or boolean; a path that ends on a list or object is an
+error unless it ends in `#`. A missing key reports the segment where the path
+stopped. Give `json` or `pattern`, not both. The reported line is approximate:
+where the last named key first appears in the file. Discovery does not read
+JSON files.
+
+### Floors
+
+Promotional copy rounds down on purpose: `80+ episodes`, `1,200+ readers`,
+`13K+ followers`. An exact comparison would always fail, so these used to go
+untracked, and floors drift quietly low. A copy with `relation: floor` passes
+when it is at or below the canonical, and, with `max_gap_pct`, no more than
+that percentage below it:
+
+```yaml
+    copies:
+      - file: marketing/ad.md
+        pattern: '([\d,.]+[Kk]?)\+ readers'
+        relation: floor
+        max_gap_pct: 10
+```
+
+- A floor above the canonical is **DRIFTED (floor overstates)**: the copy
+  claims more than is true.
+- A floor more than `max_gap_pct` below is **DRIFTED (floor lagging)**, with
+  the gap in the report. Without `max_gap_pct`, only overstatement is checked.
+- Floors accept separators, a currency symbol, a trailing `+` and a `K`, `M`
+  or `B` suffix (`13.4K` is 13,400). The fact's type must be `integer` or
+  `currency`. `relation: floor` and `rounding` cannot be combined: use
+  `rounding` when a script writes the copy with a fixed rule, and `floor`
+  when a person writes a round number.
 
 ### Globbed copies
 
