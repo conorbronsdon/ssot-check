@@ -1,7 +1,5 @@
 # ssot-check
 
-> **Maintenance mode.** This project is stable and receives security fixes. New features aren't planned, but issues and pull requests are still welcome.
-
 **Single-source-of-truth drift auditor for documentation-heavy repos.**
 
 <p align="center">
@@ -26,6 +24,12 @@ a proposed value — never a silent edit.
 It is deterministic: values are extracted with one-capture-group regexes and
 compared exactly (after typed normalization). There is no fuzzy matching — a
 mismatch always means something is wrong.
+
+Copies you know about are half the problem. The other half is the copy nobody
+declared, and the old value a partial update left behind. A fact's optional
+[`guard`](#guards-superseded-and-restated-values) scans the repo's prose for
+both. [Named repos](#named-repos) let one manifest check copies in other
+repositories without hardcoding where they are cloned.
 
 ## Quickstart
 
@@ -65,6 +69,7 @@ Common options (`check`, `validate`, `explain`):
 | `--root DIR` | Repo root for relative paths (default: the manifest's directory). |
 | `--json` | Machine-readable output (`check`, `discover`, `explain`). |
 | `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`. |
+| `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`. |
 
 `discover` takes `--root DIR`, repeatable `--ignore GLOB`, and `--json`. With
 `--manifest PATH --untracked-only`, it suppresses occurrences already covered
@@ -87,8 +92,9 @@ candidates always exit `0`, and only deterministic `check` results should gate a
 build. `discover` itself exits `2` on a configuration error.
 
 Exit codes (`check`): `0` in sync · `1` drift, canonical moved, stale entry,
-unverified copy, or stale-past-freshness canonical · `2` manifest missing,
-unparseable, or schema-invalid.
+unverified copy, stale-past-freshness canonical, repo not found, stale value,
+or restated value · `2` manifest missing, unparseable, or schema-invalid, or a
+malformed `--repo`.
 
 Exit codes (`discover`): `0` always, including when candidates are reported ·
 `2` an explicitly passed `--manifest` that is missing, unparseable, or
@@ -114,6 +120,12 @@ manifest checks, including checks for copied addresses.
 - **UNVERIFIED** — a cross-repo copy could not be read.
 - **STALE CANONICAL (freshness)** — the canonical file has not been edited within
   `max_age_days`.
+- **REPO NOT FOUND** — a [named repo](#named-repos) is not checked out anywhere
+  the run looked. Lists every location tried.
+- **STALE VALUE** — a [guard](#guards-superseded-and-restated-values) found a
+  `superseded` value still asserted.
+- **RESTATED** — a guard with `restated: true` found the current value outside
+  the canonical and its declared copies.
 
 ## Manifest reference
 
@@ -192,11 +204,105 @@ A local copy `file` may be a glob (`docs/guides/*.md`); every matching file is
 checked with the same pattern. Files matching `ignore_paths` are excluded.
 Globbing is not applied to cross-repo paths.
 
+### Guards: superseded and restated values
+
+`copies` only checks places you declared. A `guard` scans the rest of the repo's
+prose for the fact's value, on the same line as one of its anchor words:
+
+```yaml
+guard_skip_marker: '^\*\*Status:\*\* *(snapshot|historical)'   # optional, top level
+
+facts:
+  - name: linkedin-followers
+    type: integer
+    canonical:
+      repo: analytics            # a named repo; see below
+      file: goals.md
+      pattern: 'LinkedIn followers \| ([\d,]+)'
+    guard:
+      anchors:                   # whole words, case-insensitive
+        - LinkedIn
+      superseded:
+        - "11K+"
+        - "11,600"
+      restated: true
+      also_current:
+        - "13.4K"
+      exempt:
+        - sessions/
+        - CHANGELOG.md
+```
+
+- **`anchors`** (required) — a value is only reported on a line that also
+  contains one of these words. Matching a bare number anywhere is far too noisy;
+  whole-word matching keeps `UI` from matching `rebuilt`.
+- **`superseded`** — old values that must no longer appear. Reported as
+  **STALE VALUE**. This catches the partial update: three files carried the
+  number, the change reached two.
+- **`restated: true`** — also report the *current* value (the canonical's
+  extracted value plus any `also_current` spellings) anywhere except the
+  canonical file and the declared copies. Reported as **RESTATED**. Either
+  replace the copy with a pointer to the owner, or declare it under `copies`
+  so it is compared from now on. A guarded fact may have no `copies` at all,
+  which means the value lives in one place and everything else points to it.
+- **`paths`** — globs to scan (default `**/*.md`, `**/*.markdown`, `**/*.txt`,
+  `**/*.rst`). **`exempt`** — globs to skip, on top of `ignore_paths`. In both,
+  a trailing `/` means a directory prefix and `*` crosses directories.
+- **`guard_skip_marker`** (top level) — a regex; any file that matches it is
+  skipped by every guard. Use it for dated records whose old values are
+  correct history.
+
+A value is matched as a whole number: `77K` does not match `177K`, `1,152`
+does not match `1,152.5` or `11,152`, but `$1,152` and `1,152.` (sentence end)
+do. Guards scan tracked files in the manifest's repo only (all files when it is
+not a git repo), and never the manifest or the canonical file itself: the
+canonical is policed by its own pattern, and owners often record history. Other repos run their own
+manifest: a check fires where the drift is created.
+
+### Named repos
+
+A copy (or the canonical) in another repository can name that repo instead of
+hardcoding a relative path:
+
+```yaml
+repos:
+  site:                  # empty: default location ../site, relative to the root
+  brand:
+    path: ../cot-brand   # override the default
+
+facts:
+  - name: price
+    canonical:
+      file: pricing.md
+      pattern: 'Price: \$([\d,]+)'
+    copies:
+      - repo: site
+        file: src/consts.ts
+        pattern: "price = '\$([\d,]+)'"
+```
+
+Each run resolves a name in this order, and the first match wins:
+
+1. `--repo site=/path/to/site` on the command line
+2. `$SSOT_REPO_SITE` (the name upper-cased, other characters as `_`)
+3. `$SSOT_REPOS_DIR/site`, if that directory exists
+4. the manifest's `path`, default `../<name>`
+
+Options 1 and 2 are explicit and never fall back: a typo there reports
+**REPO NOT FOUND** rather than quietly reading another checkout. A repo found
+nowhere is reported **REPO NOT FOUND** with every location tried, so a missing
+clone is never mistaken for a reworded canonical. Set `SSOT_REPOS_DIR` once per
+machine (for example to `~/` or `~/code`) and every manifest resolves.
+Everything in the next section applies to named repos too: they are read-only,
+and `--fetch` is the only write. Globs and `..` are not allowed in a named
+repo's `file`.
+
 ### Cross-repo copies (never edited; `--fetch` is the one write)
 
-A copy — or the canonical — may live in a sibling clone via a path that escapes
-the repo root (`../marketing-site/pricing.html`) or an absolute path. These are
-never edited. `ssot-check` reports drift in a sibling repo; it never fixes it.
+A copy — or the canonical — may live in another repo, named with `repo:` (see
+above) or reached by a path that escapes the repo root
+(`../marketing-site/pricing.html`) or an absolute path. Prefer `repo:`; raw
+relative paths still work. These are never edited. `ssot-check` reports drift in a sibling repo; it never fixes it.
 
 **By default**, the sibling's working-tree file is read and nothing in that repo
 is touched — no network call, no git command that writes. The report identifies

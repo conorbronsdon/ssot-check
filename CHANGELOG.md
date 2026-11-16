@@ -6,6 +6,26 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+The project is no longer in maintenance mode; new features are being added.
+
+### Added
+
+- **Guards.** A fact may carry a `guard` that scans the repo's prose for its
+  value on lines that contain an anchor word. `superseded` values still present
+  are reported as **STALE VALUE**; with `restated: true`, the current value
+  (the canonical's value plus `also_current` spellings) outside the canonical
+  and declared copies is reported as **RESTATED**. `paths`, `exempt` and a
+  top-level `guard_skip_marker` set the scope. A guarded fact may have no
+  `copies`. Values match as whole numbers (`77K` never matches `177K`) and
+  anchors as whole words. Both findings exit `1`.
+- **Named repos.** A top-level `repos:` map and a `repo:` key on any locator
+  replace hardcoded `../sibling` paths. Names resolve from `--repo NAME=PATH`,
+  `$SSOT_REPO_<NAME>`, `$SSOT_REPOS_DIR/<name>`, then the manifest's `path`
+  (default `../<name>`); explicit overrides never fall back. A repo found
+  nowhere is reported as **REPO NOT FOUND** with every location tried, instead
+  of as a moved canonical or an unverified copy. Exits `1`.
+- `check --json` includes a `repos` block showing how each name resolved.
+
 ### Fixed
 
 - Discovery no longer proposes conventional `127.0.0.1` loopback examples as
