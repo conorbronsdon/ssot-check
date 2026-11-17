@@ -311,6 +311,25 @@ files. Keep the [evaluation rubric](tests/pointer-audit-rubric.md) out of that
 context and use it afterward to inspect the actual proposed edits. Evaluate the
 broken-route and no-change cases separately from the CLI unit suite.
 
+### Releasing
+
+Merging a version bump to `main` is the release. Open a PR that sets
+`__version__` in `ssot_check.py`, updates every copy listed under `release-version`
+in `.ssot.yaml`, and moves the Unreleased changelog entries under a dated
+`## [X.Y.Z] — YYYY-MM-DD` heading. When it merges, `.github/workflows/release.yml`:
+
+1. re-runs the tests and `ssot_check.py check -f .ssot.yaml`, and plans the release
+   with `scripts/release_meta.py` (the version needs a dated, non-empty changelog
+   section and must be above every existing tag);
+2. creates the annotated `vX.Y.Z` tag on the commit that set the version, if it is
+   missing;
+3. creates the GitHub release from that changelog section, if it is missing. The
+   Actions Marketplace listing follows the release.
+
+Each step checks its own target, so a merge that doesn't bump the version publishes
+nothing, and if a run fails partway, `Run workflow` on the release workflow from
+`main` finishes what is missing. Tags are never moved.
+
 ## Disclaimer
 
 *This is an independent personal project, not affiliated with, sponsored by, or endorsed by any company. All views expressed are my own.*

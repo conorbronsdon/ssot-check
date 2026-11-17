@@ -6,6 +6,12 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
+  publishes the GitHub release from its changelog section
+  (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
+
 ## [0.1.4] — 2026-11-16
 
 ### Fixed
