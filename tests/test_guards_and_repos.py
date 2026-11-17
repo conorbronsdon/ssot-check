@@ -164,6 +164,14 @@ class GuardTests(unittest.TestCase):
             r = self.run_check(tmp, m)
             self.assertEqual(self.findings(r), [])
             self.assertEqual(r["exit_code"], 0)
+            # Still compared: a wrong value in the declared copy is DRIFTED
+            # (and not RESTATED, since it no longer holds the current value).
+            write(os.path.join(tmp, "kit.md"), "UI cap $1,999\n")
+            r = self.run_check(tmp, m)
+            self.assertEqual(r["facts"][0]["copies"][0]["status"], "drifted")
+            self.assertEqual(r["exit_code"], 1)
+            self.assertEqual(self.findings(r), [])
+            write(os.path.join(tmp, "kit.md"), "UI cap $1,208\n")
             # Complement: an undeclared file with the same line still fires.
             write(os.path.join(tmp, "kit2.md"), "UI cap $1,208\n")
             r = self.run_check(tmp, m)
@@ -688,6 +696,47 @@ class SchemaGuardRulesTests(unittest.TestCase):
         for guard, ok in cases:
             with self.subTest(guard=guard):
                 self.assertEqual(self.valid(guard), ok)
+
+
+
+NAMED_UNDER_ROOT = """\
+    repos:
+      analytics:
+        path: deps/analytics
+    facts:
+      - name: followers
+        type: integer
+        canonical:
+          repo: analytics
+          file: goals.md
+          pattern: 'LinkedIn followers \\| ([\\d,]+)'
+        copies:
+          - repo: analytics
+            file: mirror.md
+            pattern: 'LinkedIn followers: ([\\d,]+)'
+        guard:
+          anchors:
+            - LinkedIn
+          restated: true
+    """
+
+
+class NamedRepoUnderRootGuardTests(_GuardHelpers, unittest.TestCase):
+    """A canonical or declared copy reached through a named repo that is
+    checked out under the root is the owner / a declared copy, not a stray
+    restatement; an undeclared file with the same value still fires."""
+
+    def test_named_repo_canonical_and_copy_are_not_restated(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, "deps", "analytics", "goals.md"),
+                  "LinkedIn followers | 13,408\n")
+            write(os.path.join(root, "deps", "analytics", "mirror.md"),
+                  "LinkedIn followers: 13,408\n")
+            write(os.path.join(root, "stray.md"), "LinkedIn 13,408\n")
+            r = self.run_check(root, manifest(NAMED_UNDER_ROOT))
+            self.assertEqual(r["facts"][0]["copies"][0]["status"], "in_sync")
+            self.assertEqual([g["file"] for g in self.findings(r, "restated")],
+                             ["stray.md"])
 
 
 if __name__ == "__main__":
