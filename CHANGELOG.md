@@ -33,6 +33,12 @@ The project is no longer in maintenance mode; new features are being added.
   canonical and, with `max_gap_pct`, within that percentage of it. Floors may
   use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
   **DRIFTED (floor lagging)**.
+- **`fix` subcommand.** Rewrites drifted local copies with their canonical
+  value, written in the copy's format (separators, currency symbol, decimals,
+  `v` prefix, trailing `+`). Prints a diff unless `--write`, then re-checks.
+  Refuses, with a reason, copies in other repos, floors, rounded and JSON
+  copies, dates, canonical suspects, and ambiguous or overlapping matches.
+  The only command that edits files.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).

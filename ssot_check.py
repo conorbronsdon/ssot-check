@@ -2141,6 +2141,211 @@ def cmd_check(args):
     return result["exit_code"]
 
 
+# --------------------------------------------------------------------------- #
+# fix: rewrite drifted copies from their canonical value. The only command
+# that edits files, so it is narrow on purpose: a dry run (a diff) unless
+# --write; local copies with an exact relation and a regex locator only; and
+# it refuses anything where the canonical may be the stale side.
+# --------------------------------------------------------------------------- #
+FIXABLE_TYPES = {"string", "integer", "currency", "semver"}
+
+
+def _group_thousands(digits, sep):
+    neg = digits.startswith("-")
+    d = digits.lstrip("-")
+    out = []
+    while len(d) > 3:
+        out.insert(0, d[-3:])
+        d = d[:-3]
+    out.insert(0, d)
+    return ("-" if neg else "") + sep.join(out)
+
+
+def format_like(canonical, copy, ftype):
+    """Write the canonical value the way the copy writes its values.
+
+    '1268' into a copy written '1,100+' gives '1,268+'; '$1500' into '1,200'
+    gives '1,500'. Returns None when the value cannot be carried over.
+    """
+    plus = "+" if copy.strip().endswith("+") else ""
+    if ftype == "string":
+        return canonical.strip()
+    if ftype == "semver":
+        core = canonical.strip().lstrip("vV")
+        prefix = copy.strip()[:1] if copy.strip()[:1] in "vV" else ""
+        return prefix + core + plus
+    try:
+        norm = normalize_value(canonical, ftype)
+    except ValueError:
+        return None
+    body = _strip_trailing_plus(copy)
+    sep = ","
+    for cand in (",", "_", " "):
+        if re.search(r"\d" + re.escape(cand) + r"\d{3}", body):
+            sep = cand
+            break
+    else:
+        sep = ""
+    if ftype == "integer":
+        return (_group_thousands(norm, sep) if sep else norm) + plus
+    # currency
+    symbol = body[:1] if body[:1] in CURRENCY_SYMBOLS else ""
+    whole, _, frac = norm.partition(".")
+    m = re.search(r"\.(\d+)$", body)
+    if m and not frac:
+        frac = "0" * len(m.group(1))
+    text = (_group_thousands(whole, sep) if sep else whole)
+    return symbol + text + ("." + frac if frac else "") + plus
+
+
+def _read_raw(path):
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def plan_fixes(root, manifest, result):
+    """Return (edits, refusals). edits: {relpath: [(start, end, old, new,
+    fact)]}; refusals: [(fact, file, reason)] for drift fix will not touch."""
+    ignore_paths = manifest.get("ignore_paths") or []
+    by_name = {f["name"]: f for f in result["facts"]}
+    edits, refusals = {}, []
+    for fact in manifest["facts"]:
+        fr = by_name.get(fact["name"])
+        if not fr:
+            continue
+        ftype = fact.get("type", "string")
+        cval = fr["canonical"].get("value")
+        drifted = {c["file"]: c for c in fr["copies"]
+                   if c["status"] == "drifted"}
+        if not drifted:
+            continue
+        for cp in fact.get("copies") or []:
+            files = ([cp["file"]] if cp.get("repo") else
+                     _expand_copy_files(root, cp["file"], ignore_paths))
+            for rel in files:
+                res = drifted.get(f"{cp['repo']}:{rel}" if cp.get("repo")
+                                  else rel)
+                if res is None:
+                    continue
+                name, where = fact["name"], res["file"]
+                reason = None
+                if res.get("cross_repo"):
+                    reason = "in another repo; fix it there"
+                elif cp.get("relation") == "floor":
+                    reason = "a floor is written by a person; pick the " \
+                             "round number by hand"
+                elif cp.get("rounding"):
+                    reason = "a rounded copy is written by its own script"
+                elif cp.get("json") is not None:
+                    reason = "JSON copies are not rewritten"
+                elif res.get("direction") == "canonical_suspect":
+                    reason = "canonical suspect: the copy is higher, so " \
+                             "the canonical may be the stale side"
+                elif ftype not in FIXABLE_TYPES:
+                    reason = f"type {ftype} is not rewritten"
+                elif cval is None:
+                    reason = "no canonical value"
+                if reason:
+                    refusals.append((name, where, reason))
+                    continue
+                content = _read_raw(_resolve(root, rel))
+                if content is None:
+                    refusals.append((name, where, "unreadable"))
+                    continue
+                old, _, count, start, end = _extract_details(content,
+                                                             cp["pattern"])
+                if old is None:
+                    refusals.append((name, where, "pattern no longer "
+                                     "matches"))
+                    continue
+                if count > 1:
+                    refusals.append((name, where, f"pattern matches "
+                                     f"{count}x; fix by hand or tighten it"))
+                    continue
+                new = format_like(cval, old, ftype)
+                ok = new is not None and values_match(cval, new, ftype)[0]
+                if not ok:
+                    refusals.append((name, where, "could not write the "
+                                     "canonical in the copy's format"))
+                    continue
+                edits.setdefault(rel, []).append((start, end, old, new,
+                                                  name))
+    # Two facts editing overlapping text in one file cannot both be right.
+    for rel, items in list(edits.items()):
+        items.sort()
+        if any(a[1] > b[0] for a, b in zip(items, items[1:])):
+            for item in items:
+                refusals.append((item[4], rel, "overlaps another fact's "
+                                 "edit in the same file"))
+            del edits[rel]
+    return edits, refusals
+
+
+def apply_edits(content, items):
+    for start, end, _, new, _ in sorted(items, reverse=True):
+        content = content[:start] + new + content[end:]
+    return content
+
+
+def cmd_fix(args):
+    try:
+        manifest = load_manifest(args.manifest)
+    except ManifestError as exc:
+        return _fail_config(f"{args.manifest}: {exc}")
+    errors = validate_manifest(manifest)
+    if errors:
+        return _fail_config(f"manifest invalid; run validate ({errors[0]})")
+    root = args.root or os.path.dirname(os.path.abspath(args.manifest))
+    try:
+        overrides = _repo_overrides(args, manifest)
+    except ManifestError as exc:
+        return _fail_config(str(exc))
+    result = check(root, manifest, repo_overrides=overrides,
+                   manifest_path=args.manifest)
+    edits, refusals = plan_fixes(root, manifest, result)
+    import difflib
+    for rel in sorted(edits):
+        before = _read_raw(_resolve(root, rel))
+        after = apply_edits(before, edits[rel])
+        sys.stdout.writelines(difflib.unified_diff(
+            before.splitlines(True), after.splitlines(True),
+            fromfile=f"a/{rel}", tofile=f"b/{rel}"))
+        if args.write:
+            with open(_resolve(root, rel), "w", encoding="utf-8",
+                      newline="") as fh:
+                fh.write(after)
+    n = sum(len(v) for v in edits.values())
+    if refusals:
+        _print("")
+        _print(f"NOT FIXED ({len(refusals)}):")
+        for name, where, reason in refusals:
+            _print(f"  - {name} — {where}: {reason}")
+    _print("")
+    if not n:
+        _print("Nothing to fix." if not refusals else
+               "Nothing fix can rewrite safely.")
+        return 1 if refusals else 0
+    if not args.write:
+        _print(f"{n} cop{'y' if n == 1 else 'ies'} in {len(edits)} "
+               f"file{'' if len(edits) == 1 else 's'} would change. "
+               "Re-run with --write to apply.")
+        return 1
+    after = check(root, manifest, repo_overrides=overrides,
+                  manifest_path=args.manifest)
+    still, _ = plan_fixes(root, manifest, after)
+    fixed_files = set(edits)
+    remaining = [c for f in after["facts"] for c in f["copies"]
+                 if c["status"] == "drifted" and c["file"] in fixed_files]
+    _print(f"Rewrote {n} cop{'y' if n == 1 else 'ies'} in {len(edits)} "
+           f"file{'' if len(edits) == 1 else 's'}; re-check: "
+           + ("all rewritten copies in sync." if not remaining and not still
+              else f"{len(remaining)} still drifted."))
+    return 1 if (remaining or refusals) else 0
+
+
 def cmd_discover(args):
     # The annotation text states that an occurrence is not covered by the
     # manifest, which is only established by the --untracked-only pass.
@@ -2300,6 +2505,14 @@ def build_parser():
     _add_fetch(e)
     _add_repo(e)
     e.set_defaults(func=cmd_explain)
+
+    fx = sub.add_parser("fix", help="rewrite drifted local copies from the "
+                                    "canonical (dry run unless --write)")
+    add_common(fx)
+    fx.add_argument("--write", action="store_true",
+                    help="apply the changes; without it, only print a diff")
+    _add_repo(fx)
+    fx.set_defaults(func=cmd_fix)
     return p
 
 
@@ -2309,7 +2522,7 @@ def main(argv=None):
     # Default subcommand is `check`. Global options (--version, -h/--help) are
     # owned by the top-level parser and must not be swept into the default
     # subcommand — doing so routed `--version` to `check`, which rejected it.
-    known = {"check", "validate", "discover", "explain"}
+    known = {"check", "validate", "discover", "explain", "fix"}
     global_opts = {"-h", "--help", "--version"}
     if argv and argv[0] in global_opts:
         pass

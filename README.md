@@ -59,6 +59,7 @@ python3 ssot_check.py <command> [options]
   validate   structural check of the manifest against the schema
   discover   propose drift-prone facts from prose (writes nothing)
   explain    show one fact's canonical value and all copies
+  fix        rewrite drifted local copies from the canonical (diff; --write applies)
 ```
 
 Common options (`check`, `validate`, `explain`):
@@ -414,13 +415,43 @@ sequence items on the same line as their key, and tab indentation (use spaces).
 `validate` reports a friendly error with a line number when the manifest strays
 outside the subset.
 
+## Fix
+
+`check` finds drift; `fix` repairs the simple cases. It rewrites each drifted
+copy with its canonical value, and nothing else:
+
+```bash
+python3 ssot_check.py fix            # print a diff; change nothing
+python3 ssot_check.py fix --write    # apply it, then re-check
+```
+
+Only the captured value changes, written the way the copy writes numbers:
+canonical `1268` replaces `1,100+` as `1,268+`, and `$2,200.00` stays
+two-decimal. Line endings and the rest of the file are kept. `fix` refuses,
+and lists under **NOT FIXED**, every copy it cannot rewrite with certainty:
+
+- a copy in another repo (fix it there);
+- a `relation: floor` copy (a person picks the round number) or a `rounding`
+  copy (its script writes it);
+- a `json` copy, or a `date` fact;
+- a **canonical suspect**: a monotonic copy higher than its canonical, where
+  the canonical is probably the stale side;
+- a pattern that matches more than once in the file, or two facts whose
+  edits overlap.
+
+Exit codes: `0` when nothing is drifted, or when `--write` fixed everything;
+`1` when a dry run would change something, or when anything was refused or is
+still drifted after the write; `2` for a manifest error. Review the diff
+before `--write`, and commit the result like any other edit.
+
 ## Skill wrapper
 
 [`SKILL.md`](SKILL.md) is a thin, model-invocable [agent skill](https://code.claude.com/docs/en/skills)
 around the CLI. The CLI does the deterministic work; the skill adds judgment —
 helping a human curate a manifest from `discover` output and interpreting a
-`check` report. The CLI never edits docs or the manifest; the only state it can
-change is a sibling repo's remote-tracking refs, under `--fetch`.
+`check` report. The CLI never edits the manifest or a canonical. It edits
+docs only under `fix --write`, and only drifted local copies; the only other
+state it can change is a sibling repo's remote-tracking refs, under `--fetch`.
 For audit-only requests, the skill proposes fixes. An explicit request to fix
 the docs or manifest authorizes scoped, reviewable edits; it does not change the
 CLI's read-only behavior or authorize unrelated external actions.
