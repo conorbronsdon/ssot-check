@@ -261,7 +261,8 @@ that percentage below it:
 
 A local copy `file` may be a glob (`docs/guides/*.md`); every matching file is
 checked with the same pattern. Files matching `ignore_paths` are excluded.
-Globbing is not applied to cross-repo paths.
+A glob that matches no file (after exclusions) is reported as a stale manifest
+entry, not skipped. Globbing is not applied to cross-repo paths.
 
 ### Guards: superseded and restated values
 
