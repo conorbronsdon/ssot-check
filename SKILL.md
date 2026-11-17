@@ -21,8 +21,12 @@ the user's task when no mode was supplied.
 - **discover**: propose drift-prone facts for a new or expanded manifest.
 - **explain NAME**: inspect one fact's canonical value and copies.
 - **pointers**: trace documentation ownership and access routes using
-  [the pointer audit](references/pointer-audit.md). This is an agent workflow,
-  not a `ssot_check.py` subcommand. Use it even when there are no copied numbers.
+  [the pointer audit](references/pointer-audit.md). This is an agent workflow.
+  Use it even when there are no copied numbers. Start it by running
+  `python3 "$SKILL_DIR/ssot_check.py" pointers --root "$TARGET_REPO"`, which
+  deterministically reports marked pointers (`⏳ what: \`file\``) whose
+  target is MISSING or whose repo is not checked out. A clean run covers only
+  that; the route, ownership and access questions remain yours.
 
 The CLI performs deterministic extraction and comparison. It does not check
 whether a reader can find a setup guide, whether a linked service works, or

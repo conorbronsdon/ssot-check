@@ -59,6 +59,7 @@ python3 ssot_check.py <command> [options]
   validate   structural check of the manifest against the schema
   discover   propose drift-prone facts from prose (writes nothing)
   explain    show one fact's canonical value and all copies
+  pointers   check that every pointer marker's target file exists
 ```
 
 Common options (`check`, `validate`, `explain`):
@@ -414,6 +415,52 @@ sequence items on the same line as their key, and tab indentation (use spaces).
 `validate` reports a friendly error with a line number when the manifest strays
 outside the subset.
 
+## Pointers
+
+A value that changes should live in one file; everywhere else points to it
+instead of copying it. `pointers` checks that every pointer still points
+somewhere:
+
+```bash
+python3 ssot_check.py pointers --root .
+```
+
+A pointer is a marker (default `⏳`, set with `--marker`) followed by its
+target. These forms are recognized:
+
+| Form | Example |
+|---|---|
+| label, colon, target | ``⏳ weekly cap: `finance/benefits.md` `` |
+| bold label | ``⏳ **Current gate:** `finance/plan.md` `` |
+| bare target (table cells) | ``\| ⏳ `investing/config.yaml` \|`` |
+| link target | `⏳ status: [the plan](career/plan.md)` |
+| parenthesized | ``⏳ downloads (`analytics/goals.md`)`` |
+| another repo | ``⏳ goals: `~/cot-production/goals.md` ``, `` `prod:goals.md` ``, ``prod `goals.md` `` |
+
+A pointer may wrap onto the next line. A target resolves, first match wins,
+from the repo root, then the pointing file's directory, then another repo:
+`~/repo/path`, `repo:path`, `repo/path`, or a repo name written just before
+the target. Other repos are found the same way as
+[named repos](#named-repos) (`--repo`, `$SSOT_REPO_<NAME>`,
+`$SSOT_REPOS_DIR`, the manifest's `repos:`, then `../<name>`). A `#heading`
+or `:line` suffix is stripped and not checked.
+
+- **MISSING** — the target exists nowhere it could resolve. Exits `1`.
+- **REPO NOT FOUND** — the target is in another repo that is not checked
+  out. Exits `1`.
+- **MALFORMED** — a marker that is not followed by a target, such as
+  `⏳ pointer.` or ``⏳ Open: the `branch` ``. A word before the target counts
+  as a repo only if that repo is found or declared in the manifest. These
+  are reported but exit `0` unless you pass `--strict`, because the marker
+  is often used as a "pending" sign in logs.
+
+Markers inside inline code or fenced blocks are documentation about the
+convention and are skipped, as are placeholder targets (`<owner>`) and URLs,
+which are a link checker's job. When the root has a `.ssot.yaml`, its
+`ignore_paths` and `guard_skip_marker` apply; `--ignore` and `--skip-marker`
+add to them. Only Markdown, text and reST files are scanned unless you pass
+`--path`. `--json` gives machine-readable output.
+
 ## Skill wrapper
 
 [`SKILL.md`](SKILL.md) is a thin, model-invocable [agent skill](https://code.claude.com/docs/en/skills)
@@ -428,8 +475,10 @@ CLI's read-only behavior or authorize unrelated external actions.
 The skill also supports **pointers**, an agent workflow for disconnected setup
 guides and cross-repo ownership. It traces the reader's entry point to the
 maintained guide, checks checkout/worktree context, and separates configuration
-from verified service access. This is not a CLI subcommand or a new guarantee
-from a green `check`. See [the pointer audit](references/pointer-audit.md).
+from verified service access. See [the pointer audit](references/pointer-audit.md).
+The `pointers` subcommand is a narrower, deterministic part of that job: it
+checks that each marked pointer's target exists. A clean run does not show
+that a reader can find the guide, or that the guide is current.
 
 Install the whole repository into the skill directory so its references and CLI
 remain available. Keep an installed copy separate from the source checkout.

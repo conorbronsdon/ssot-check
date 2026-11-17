@@ -33,6 +33,13 @@ The project is no longer in maintenance mode; new features are being added.
   canonical and, with `max_gap_pct`, within that percentage of it. Floors may
   use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
   **DRIFTED (floor lagging)**.
+- **`pointers` subcommand.** Finds every pointer marker (default `⏳`) in the
+  repo's prose and checks that its target exists, resolving from the repo
+  root, the pointing file's directory, or another repo (`~/repo/path`,
+  `repo:path`, `repo/path`, or a repo name before the target). **MISSING** and
+  **REPO NOT FOUND** exit `1`; a marker with no target is **MALFORMED**,
+  advisory unless `--strict`. Markers in code, placeholder targets and URLs
+  are skipped; the manifest's `ignore_paths` and `guard_skip_marker` apply.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
