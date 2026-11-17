@@ -250,7 +250,9 @@ that percentage below it:
 - A floor more than `max_gap_pct` below is **DRIFTED (floor lagging)**, with
   the gap in the report. Without `max_gap_pct`, only overstatement is checked.
 - Floors accept separators, a currency symbol, a trailing `+` and a `K`, `M`
-  or `B` suffix (`13.4K` is 13,400). The fact's type must be `integer` or
+  or `B` suffix (`13.4K` is 13,400). Both values must be zero or positive; a
+  negative one is reported as drift with a note. A zero canonical allows only
+  a zero floor. The fact's type must be `integer` or
   `currency`. `relation: floor` and `rounding` cannot be combined: use
   `rounding` when a script writes the copy with a fixed rule, and `floor`
   when a person writes a round number.

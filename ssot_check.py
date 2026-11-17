@@ -427,7 +427,8 @@ def validate_manifest(manifest):
                     if rel != "floor":
                         err(f"{name}.copies[{j}]: max_gap_pct needs "
                             "relation: floor", cp, "max_gap_pct")
-                    elif not re.fullmatch(r"\d+(?:\.\d+)?", str(gap)) or \
+                    elif not re.fullmatch(r"\d+(?:\.\d*)?|\.\d+",
+                                          str(gap)) or \
                             not 0 < float(gap) < 100:
                         err(f"{name}.copies[{j}]: max_gap_pct must be a "
                             "number between 0 and 100", cp, "max_gap_pct")
@@ -617,6 +618,9 @@ def _floor_number(value):
     if not m:
         raise ValueError(f"not a number: {value!r}")
     n = float(m.group(1)) * _MAGNITUDE.get(m.group(2).lower(), 1)
+    if n < 0:
+        raise ValueError(f"floor values must be zero or positive, got "
+                         f"{value!r}")
     return n
 
 
@@ -634,6 +638,8 @@ def compare_floor(canonical, copy, max_gap_pct=None):
     if co > cn:
         return False, "overstated", (f"floor {copy.strip()!r} is above the "
                                      f"canonical {canonical.strip()!r}")
+    # Both values are >= 0 here. With a zero canonical the only floor that
+    # is not above it is 0, which has no gap, so the gap check needs cn > 0.
     if max_gap_pct is not None and cn > 0:
         gap = (cn - co) / cn * 100
         if gap > float(max_gap_pct):
@@ -660,6 +666,9 @@ def parse_json_path(path):
                              f"{path!r}")
         if seg != "#" and "#" in seg:
             raise ValueError(f"'#' must be its own segment in {path!r}")
+    if segs == ["#"]:
+        raise ValueError(f"'#' (length) needs a list or object before it, "
+                         f"e.g. 'episodes.#', not {path!r}")
     return segs
 
 

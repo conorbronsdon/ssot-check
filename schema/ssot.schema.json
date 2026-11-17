@@ -82,7 +82,7 @@
     },
     "json_path": {
       "type": "string",
-      "pattern": "^(#|[^.#]+(\\.[^.#]+)*(\\.#)?)$",
+      "pattern": "^[^.#]+(\\.[^.#]+)*(\\.#)?$",
       "description": "Dot-separated keys and list indexes into a JSON file. A final '#' reads the length of the list or object before it."
     },
     "guard": {
