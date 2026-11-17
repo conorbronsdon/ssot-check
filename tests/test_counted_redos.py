@@ -4,6 +4,7 @@ Run: python3 -m unittest discover tests
 """
 
 import os
+import re
 import sys
 import tempfile
 import time
@@ -54,6 +55,20 @@ class CountedBeforeMatchesTests(unittest.TestCase):
         self.assertEqual(_before("users  :  1200"), [("users", "1200")])
         self.assertEqual(_before("users  \t  \n  1200"), [("users", "1200")])
 
+    def test_same_matches_as_the_old_pattern(self):
+        old = re.compile(
+            r"\b(" + sc._UNIT_RE + r")\b\s*[:=]?\s*(\d[\d,]{1,})\+?", re.I)
+        seps = ["", " ", "  ", "\t", " \n ", ":", "=", " :", ": ", " : ", "\t=\t",
+                "  =  ", "::", "==", ":=", " : = ", "-", " x "]
+        for unit in ("users", "Customers", "downloads"):
+            for sep in seps:
+                for value in ("1200", "1,200", "1,200+", "12"):
+                    text = f"{unit}{sep}{value}"
+                    self.assertEqual(
+                        [m.groups() for m in sc._COUNTED_BEFORE.finditer(text)],
+                        [m.groups() for m in old.finditer(text)],
+                        repr(text))
+
     def test_must_not_fire_without_a_number(self):
         self.assertEqual(_before("users: none"), [])
         self.assertEqual(_before("users :: 1200"), [])
@@ -91,6 +106,39 @@ class CountedTimingTests(unittest.TestCase):
             found = _after(f'data-points="{points}{tail}')
             self.assertLess(time.perf_counter() - start, self.BUDGET_S, tail)
             self.assertEqual(len(found), expected, tail)
+
+
+
+def _best_of_3(fn):
+    best = float("inf")
+    for _ in range(3):
+        start = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - start)
+    return best
+
+
+class CountedGrowthTests(unittest.TestCase):
+    """8x the input must cost well under 64x the time (quadratic) on every shape."""
+
+    N = 10_000
+    MAX_RATIO = 24
+
+    SHAPES = {
+        "comma run, no unit": (sc._COUNTED_AFTER, lambda n: ",".join(["1"] * n) + "</div>"),
+        "comma run, unit-like miss": (sc._COUNTED_AFTER, lambda n: ",".join(["1"] * n) + " xusers"),
+        "unit, spaces, no number": (sc._COUNTED_BEFORE, lambda n: "users" + " " * n + "x"),
+        "unit, spaces, colon, spaces, no number": (
+            sc._COUNTED_BEFORE, lambda n: "users" + " " * n + ":" + " " * n + "x"),
+    }
+
+    def test_growth_is_linear(self):
+        for label, (pattern, make) in self.SHAPES.items():
+            small, large = make(self.N), make(8 * self.N)
+            t_small = max(_best_of_3(lambda: list(pattern.finditer(small))), 1e-4)
+            t_large = _best_of_3(lambda: list(pattern.finditer(large)))
+            self.assertLess(t_large / t_small, self.MAX_RATIO,
+                            f"{label}: {t_small:.4f}s -> {t_large:.4f}s")
 
 
 if __name__ == "__main__":
