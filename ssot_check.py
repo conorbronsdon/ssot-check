@@ -18,6 +18,7 @@ parser (see parse_manifest); the supported subset is documented in README.md.
 """
 
 import argparse
+import difflib
 import fnmatch
 import json
 import os
@@ -33,6 +34,19 @@ VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
 VALID_RELATIONS = {"equal", "floor"}
 FLOOR_TYPES = {"integer", "currency"}
+
+# The keys the manifest accepts at each level, as in schema/ssot.schema.json
+# (every object there sets additionalProperties: false). A misspelled key is
+# otherwise silently ignored, which turns off what it was meant to enable.
+MANIFEST_KEYS = {"facts", "guard_skip_marker", "ignore_paths", "repos"}
+REPO_KEYS = {"path"}
+FACT_KEYS = {"name", "type", "monotonic", "note", "freshness", "canonical",
+             "copies", "guard"}
+FRESHNESS_KEYS = {"owner", "max_age_days"}
+LOCATOR_KEYS = {"file", "pattern", "json", "repo"}
+COPY_KEYS = LOCATOR_KEYS | {"rounding", "relation", "max_gap_pct", "note"}
+GUARD_KEYS = {"anchors", "superseded", "restated", "also_current", "paths",
+              "exempt"}
 CURRENCY_SYMBOLS = "$€£¥"
 
 # File extensions discover scans (prose only — code/data are out of scope here).
@@ -334,6 +348,44 @@ def _non_string_values(manifest, line_of):
     return errors
 
 
+def _unknown_keys(manifest, line_of):
+    """Report keys the schema does not define, naming the closest valid key."""
+    errors = []
+
+    def check(node, allowed, where):
+        if not isinstance(node, dict):
+            return
+        for key in node:
+            if key in allowed:
+                continue
+            close = difflib.get_close_matches(str(key), sorted(allowed), n=1)
+            hint = f" (did you mean {close[0]!r}?)" if close else ""
+            ln = line_of(node, key)
+            msg = (f"{where}: unknown key {key!r}{hint}; allowed: "
+                   f"{', '.join(sorted(allowed))}")
+            errors.append(f"line {ln}: {msg}" if ln else msg)
+
+    check(manifest, MANIFEST_KEYS, "manifest")
+    repos = manifest.get("repos")
+    if isinstance(repos, dict):
+        for rname, rdef in repos.items():
+            check(rdef, REPO_KEYS, f"repos.{rname}")
+    facts = manifest.get("facts")
+    for i, fact in enumerate(facts if isinstance(facts, list) else []):
+        if not isinstance(fact, dict):
+            continue
+        name = fact.get("name") if isinstance(fact.get("name"), str) and \
+            fact.get("name") else f"facts[{i}]"
+        check(fact, FACT_KEYS, name)
+        check(fact.get("freshness"), FRESHNESS_KEYS, f"{name}.freshness")
+        check(fact.get("canonical"), LOCATOR_KEYS, f"{name}.canonical")
+        check(fact.get("guard"), GUARD_KEYS, f"{name}.guard")
+        copies = fact.get("copies")
+        for j, cp in enumerate(copies if isinstance(copies, list) else []):
+            check(cp, COPY_KEYS, f"{name}.copies[{j}]")
+    return errors
+
+
 def validate_manifest(manifest):
     """Return a list of human-readable error strings ([] means valid)."""
     errors = []
@@ -354,6 +406,8 @@ def validate_manifest(manifest):
     shape_errors = _non_string_values(manifest, line_of)
     if shape_errors:
         return shape_errors
+
+    errors.extend(_unknown_keys(manifest, line_of))
 
     ignore = manifest.get("ignore_paths")
     if ignore is not None and not isinstance(ignore, list):

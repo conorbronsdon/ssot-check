@@ -1398,5 +1398,117 @@ class CLIExitCodeTests(unittest.TestCase):
             self.assertIn("no manifest locator resolved", r.stderr)
 
 
+# --------------------------------------------------------------------------- #
+class UnknownKeyTests(unittest.TestCase):
+    """A key the schema does not define is a validation error, not ignored."""
+
+    BASE = textwrap.dedent("""\
+        repos:
+          site:
+            path: ../site
+        facts:
+          - name: price
+            type: integer
+            monotonic: true
+            note: n
+            freshness:
+              owner: docs
+              max_age_days: 30
+            canonical:
+              file: a.md
+              pattern: 'Price: (\\d+)'
+            guard:
+              anchors:
+                - price
+              superseded:
+                - '3'
+              restated: true
+              also_current:
+                - '4'
+              paths:
+                - '*.md'
+              exempt:
+                - old.md
+            copies:
+              - file: b.md
+                pattern: 'Only (\\d+)'
+                relation: floor
+                max_gap_pct: 10
+                note: n
+              - repo: site
+                file: c.md
+                json: price
+        """)
+
+    def errors(self, text):
+        return sc.validate_manifest(sc.parse_manifest(text))
+
+    def test_every_schema_key_is_accepted(self):
+        self.assertEqual(self.errors(self.BASE), [])
+
+    def test_misspelled_keys_are_reported_with_line_and_hint(self):
+        cases = (
+            ("repos:\n", "repoz:\n", 1,
+             "manifest: unknown key 'repoz' (did you mean 'repos'?)"),
+            ("    path: ../site", "    paht: ../site", 3,
+             "repos.site: unknown key 'paht' (did you mean 'path'?)"),
+            ("    monotonic: true", "    monotnic: true", 7,
+             "price: unknown key 'monotnic' (did you mean 'monotonic'?)"),
+            ("    freshness:", "    freshnes:", 9,
+             "price: unknown key 'freshnes' (did you mean 'freshness'?)"),
+            ("      owner: docs", "      onwer: docs", 10,
+             "price.freshness: unknown key 'onwer' (did you mean 'owner'?)"),
+            ("      file: a.md", "      file: a.md\n      notes: x", 14,
+             "price.canonical: unknown key 'notes'"),
+            ("      restated: true", "      restate: true", 20,
+             "price.guard: unknown key 'restate' (did you mean "
+             "'restated'?)"),
+            ("        relation: floor", "        relaton: floor", 30,
+             "price.copies[0]: unknown key 'relaton' (did you mean "
+             "'relation'?)"),
+        )
+        for old, new, line, msg in cases:
+            with self.subTest(new=new):
+                text = self.BASE.replace(old, new, 1)
+                self.assertNotEqual(text, self.BASE)
+                errs = [e for e in self.errors(text) if "unknown key" in e]
+                self.assertEqual(len(errs), 1, errs)
+                self.assertTrue(errs[0].startswith(f"line {line}: {msg}"),
+                                errs[0])
+
+    def test_validate_cli_exits_2_on_unknown_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = os.path.join(tmp, "good.yaml")
+            bad = os.path.join(tmp, "bad.yaml")
+            write(good, self.BASE)
+            write(bad, self.BASE.replace("    guard:", "    gaurd:"))
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch("sys.stdout", out), \
+                    unittest.mock.patch("sys.stderr", err):
+                self.assertEqual(sc.main(["validate", "-f", good]), 0)
+                self.assertEqual(sc.main(["validate", "-f", bad]), 2)
+                self.assertEqual(sc.main(["check", "-f", bad]), 2)
+            self.assertIn("price: unknown key 'gaurd' (did you mean "
+                          "'guard'?)", err.getvalue())
+
+    def test_key_sets_match_the_json_schema(self):
+        with open(os.path.join(os.path.dirname(HERE), "schema",
+                               "ssot.schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        defs = schema["definitions"]
+        for name, props, keys in (
+                ("manifest", schema["properties"], sc.MANIFEST_KEYS),
+                ("repo", schema["properties"]["repos"]
+                 ["additionalProperties"]["properties"], sc.REPO_KEYS),
+                ("fact", defs["fact"]["properties"], sc.FACT_KEYS),
+                ("freshness", defs["fact"]["properties"]["freshness"]
+                 ["properties"], sc.FRESHNESS_KEYS),
+                ("locator", defs["locator"]["properties"], sc.LOCATOR_KEYS),
+                ("copy", defs["copy"]["properties"], sc.COPY_KEYS),
+                ("guard", defs["guard"]["properties"], sc.GUARD_KEYS)):
+            with self.subTest(name=name):
+                self.assertEqual(set(props), keys)
+
+
 if __name__ == "__main__":
     unittest.main()

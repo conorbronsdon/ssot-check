@@ -133,6 +133,9 @@ manifest checks, including checks for copied addresses.
 
 `.ssot.yaml` lives at the repo root. Annotated template: [`.ssot.example.yaml`](.ssot.example.yaml).
 Formal schema for editors/CI: [`schema/ssot.schema.json`](schema/ssot.schema.json).
+A key the schema does not define is a validation error (exit `2`), so a
+misspelling such as `gaurd:` or `relaton:` cannot silently turn off what it
+was meant to enable.
 
 ```yaml
 # Globs excluded from globbed-copy expansion and from `discover` scans.
