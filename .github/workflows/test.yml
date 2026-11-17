@@ -7,8 +7,11 @@ on:
 
 jobs:
   unittest:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) has no Python 3.9 build, so the 3.9 cell runs on 24.04.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
+      # One cell's setup failure must not cancel the others' test results.
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.11", "3.12"]
     steps:
