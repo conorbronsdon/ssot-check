@@ -9,6 +9,18 @@ ignore_paths:
   - "**/CHANGELOG.md"
   - "vendor/**"
 
+# Other repos this manifest reads, by name. A copy says `repo: marketing-site`
+# instead of a `../marketing-site/...` path. Each run resolves the name from
+# --repo NAME=PATH, then $SSOT_REPO_MARKETING_SITE, then
+# $SSOT_REPOS_DIR/marketing-site, then `path` below (default ../NAME).
+repos:
+  marketing-site:
+    path: ../marketing-site
+
+# Optional: files matching this regex are skipped by every guard (below).
+# Point-in-time records keep the values that were true when written.
+guard_skip_marker: '^\*\*Status:\*\* *(snapshot|historical)'
+
 facts:
   # A plain count. type: integer normalizes thousands separators and a trailing
   # '+', so "1,234" == "1234" == "1234+".
@@ -65,7 +77,8 @@ facts:
         rounding: floor-1000
         note: auto-written by scripts/metrics.py, floored to the nearest 1,000.
 
-  # A cross-repo copy (path escapes the repo root). By default the sibling's
+  # A cross-repo copy in a named repo (declared under `repos:` above; a
+  # raw `../marketing-site/pricing.html` path also works). By default the other repo's
   # working tree is read and nothing in that repo is touched. With `check
   # --fetch`, ssot-check runs `git fetch` there and compares against the
   # remote-tracking ref: that updates the sibling's remote-tracking refs and
@@ -76,7 +89,8 @@ facts:
       file: docs/pricing.md
       pattern: 'Per seat:\s*\$([\d,]+)'
     copies:
-      - file: ../marketing-site/pricing.html
+      - repo: marketing-site
+        file: pricing.html
         pattern: 'data-price-seat="\$?([\d,]+)"'
 
   # A globbed copy path: every matching local file is checked with this pattern.
@@ -88,3 +102,43 @@ facts:
     copies:
       - file: 'docs/guides/*.md'
         pattern: 'email us at (\S+@\S+)'
+
+  # A guarded fact. `copies` covers places you declared; `guard` scans the
+  # rest of this repo's prose, on lines that contain an anchor word:
+  #   superseded     old values still asserted          -> STALE VALUE
+  #   restated: true current value written undeclared   -> RESTATED
+  # With no copies at all, the value lives only in the canonical and every
+  # other mention should be a pointer to it.
+  - name: weekly-benefit-cap
+    type: currency
+    canonical:
+      file: docs/benefits.md
+      pattern: 'Weekly cap:\s*\$([\d,]+)'
+    guard:
+      anchors:
+        - benefit
+        - cap
+      superseded:
+        - "1,152"
+      restated: true
+      also_current:
+        - "31K"
+      exempt:
+        - history/
+
+  # A value read from a JSON file by key path instead of a regex. A final '#'
+  # reads a length: here, how many episodes the feed lists. The README floor
+  # is written by a person ("80+ episodes"), so it is a floor, not an exact
+  # copy: it must not exceed the canonical, and may trail it by at most 10%.
+  - name: episode-count
+    type: integer
+    canonical:
+      file: data/stats.json
+      json: episodes_published
+    copies:
+      - file: data/feed.json
+        json: episodes.#
+      - file: README.md
+        pattern: '(\d+)\+ episodes'
+        relation: floor
+        max_gap_pct: 10

@@ -25,11 +25,14 @@ import re
 import subprocess
 import sys
 from datetime import date, datetime
+from pathlib import PurePosixPath, PureWindowsPath
 
 __version__ = "0.1.4"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
+VALID_RELATIONS = {"equal", "floor"}
+FLOOR_TYPES = {"integer", "currency"}
 CURRENCY_SYMBOLS = "$€£¥"
 
 # File extensions discover scans (prose only — code/data are out of scope here).
@@ -272,8 +275,16 @@ def parse_manifest(text):
 def load_manifest(path):
     if not os.path.isfile(path):
         raise ManifestError(f"manifest not found: {path}")
-    with open(path, encoding="utf-8") as fh:
-        return parse_manifest(fh.read())
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except UnicodeDecodeError as exc:
+        raise ManifestError(f"manifest is not valid UTF-8: {exc.reason} "
+                            f"at byte {exc.start}") from None
+    except OSError as exc:
+        raise ManifestError(f"cannot read manifest: {exc.strerror or exc}") \
+            from None
+    return parse_manifest(text)
 
 
 # --------------------------------------------------------------------------- #
@@ -297,6 +308,30 @@ def validate_manifest(manifest):
     if ignore is not None and not isinstance(ignore, list):
         err("ignore_paths must be a list of glob strings", manifest,
             "ignore_paths")
+
+    marker = manifest.get("guard_skip_marker")
+    if marker is not None:
+        try:
+            re.compile(str(marker))
+        except re.error as exc:
+            err(f"guard_skip_marker: invalid regex ({exc})", manifest,
+                "guard_skip_marker")
+
+    repos = manifest.get("repos")
+    repo_names = set()
+    if repos is not None:
+        if not isinstance(repos, dict):
+            err("repos must be a mapping of repo name to {path}", manifest,
+                "repos")
+        else:
+            for rname, rdef in repos.items():
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", rname):
+                    err(f"repos: name {rname!r} must be letters, digits, "
+                        "'.', '_' or '-'", repos, rname)
+                if rdef is not None and not isinstance(rdef, dict):
+                    err(f"repos.{rname}: must be a mapping (e.g. "
+                        "{path: ../name}) or empty", repos, rname)
+                repo_names.add(rname)
 
     facts = manifest.get("facts")
     if facts is None:
@@ -352,40 +387,140 @@ def validate_manifest(manifest):
         if not isinstance(canon, dict):
             err(f"{name}: missing 'canonical' mapping", fact, "canonical")
         else:
-            _check_locator(canon, f"{name}.canonical", errors, line_of)
+            _check_locator(canon, f"{name}.canonical", errors, line_of,
+                           repo_names)
+
+        guard = fact.get("guard")
+        if guard is not None:
+            _check_guard(guard, name, errors, line_of)
 
         copies = fact.get("copies")
-        if copies is None:
-            err(f"{name}: missing 'copies' list", fact, "copies")
+        if copies is None and guard is None:
+            err(f"{name}: missing 'copies' list (or a 'guard' block)", fact,
+                "copies")
+        elif copies is None:
+            pass  # a guarded fact with no copies: pointer-only
         elif not isinstance(copies, list):
             err(f"{name}: 'copies' must be a list", fact, "copies")
-        elif not copies:
+        elif not copies and guard is None:
             err(f"{name}: 'copies' is empty — a fact with no copies cannot "
-                "drift; remove it or add copies", fact, "copies")
+                "drift; remove it, add copies, or add a 'guard'", fact,
+                "copies")
         else:
             for j, cp in enumerate(copies):
                 if not isinstance(cp, dict):
                     errors.append(f"{name}.copies[{j}]: must be a mapping")
                     continue
-                _check_locator(cp, f"{name}.copies[{j}]", errors, line_of)
+                _check_locator(cp, f"{name}.copies[{j}]", errors, line_of,
+                               repo_names)
                 rnd = cp.get("rounding")
                 if rnd is not None and rnd not in VALID_ROUNDING:
                     err(f"{name}.copies[{j}]: rounding {rnd!r} not one of "
                         f"{sorted(VALID_ROUNDING)}", cp, "rounding")
+                rel = cp.get("relation")
+                if rel is not None and rel not in VALID_RELATIONS:
+                    err(f"{name}.copies[{j}]: relation {rel!r} not one of "
+                        f"{sorted(VALID_RELATIONS)}", cp, "relation")
+                if rel == "floor":
+                    if ftype not in FLOOR_TYPES:
+                        err(f"{name}.copies[{j}]: relation floor needs type "
+                            f"integer or currency (fact is {ftype!r})", cp,
+                            "relation")
+                    if rnd is not None:
+                        err(f"{name}.copies[{j}]: relation floor and "
+                            "rounding cannot be combined; a floor already "
+                            "allows a lower value", cp, "rounding")
+                gap = cp.get("max_gap_pct")
+                if gap is not None:
+                    if rel != "floor":
+                        err(f"{name}.copies[{j}]: max_gap_pct needs "
+                            "relation: floor", cp, "max_gap_pct")
+                    elif not re.fullmatch(r"\d+(?:\.\d*)?|\.\d+",
+                                          str(gap)) or \
+                            not 0 < float(gap) < 100:
+                        err(f"{name}.copies[{j}]: max_gap_pct must be a "
+                            "number between 0 and 100", cp, "max_gap_pct")
     return errors
 
 
-def _check_locator(loc, where, errors, line_of):
-    """Validate a {file, pattern} block."""
+def _check_guard(guard, name, errors, line_of):
+    """Validate a fact's `guard` block (superseded / restated scans)."""
+    def err(msg, node, key):
+        ln = line_of(node, key)
+        errors.append(f"line {ln}: {msg}" if ln else msg)
+
+    if not isinstance(guard, dict):
+        errors.append(f"{name}.guard: must be a mapping")
+        return
+    anchors = guard.get("anchors")
+    if not isinstance(anchors, list) or not anchors or \
+            not all(isinstance(a, str) and a.strip() for a in anchors):
+        err(f"{name}.guard: 'anchors' must be a non-empty list of words — "
+            "a value is only reported on a line that also names the fact",
+            guard, "anchors")
+    for key in ("superseded", "also_current", "paths", "exempt"):
+        val = guard.get(key)
+        if val is not None and (not isinstance(val, list) or
+                                not all(isinstance(v, str) for v in val)):
+            err(f"{name}.guard.{key}: must be a list of strings", guard, key)
+    restated = guard.get("restated")
+    if restated is not None and str(restated).lower() not in ("true",
+                                                              "false"):
+        err(f"{name}.guard.restated: must be true/false", guard, "restated")
+    restated_on = str(restated).lower() == "true"
+    if not guard.get("superseded") and not restated_on:
+        err(f"{name}.guard: nothing to scan for — give 'superseded' values, "
+            "'restated: true', or both", guard, "superseded")
+    if guard.get("also_current") and not restated_on:
+        err(f"{name}.guard.also_current: only used with 'restated: true'",
+            guard, "also_current")
+
+
+def _is_absolute_any_os(path):
+    """True if a manifest path is absolute or drive-anchored on ANY OS.
+
+    Manifest paths are portable input, so this must not depend on the host:
+    os.path.isabs('/x') is False on Windows from Python 3.13, and
+    os.path.isabs('C:/x') is False on POSIX. 'C:x' (drive-relative) and
+    '\\\\server\\share' are rejected too.
+    """
+    return (PurePosixPath(path).is_absolute() or
+            bool(PureWindowsPath(path).anchor))
+
+
+def _check_locator(loc, where, errors, line_of, repo_names=()):
+    """Validate a {file, pattern[, repo]} block."""
     def err(msg, key):
         ln = line_of(loc, key)
         errors.append(f"line {ln}: {msg}" if ln else msg)
 
+    repo = loc.get("repo")
+    if repo is not None:
+        if repo not in repo_names:
+            err(f"{where}: repo {repo!r} is not declared under top-level "
+                "'repos'", "repo")
+        f = str(loc.get("file") or "")
+        if _is_absolute_any_os(f) or ".." in f.replace("\\", "/").split("/"):
+            err(f"{where}: with 'repo', 'file' must be a path inside that "
+                "repo (no absolute path, no '..')", "file")
+        elif any(ch in f for ch in "*?["):
+            err(f"{where}: globs are not supported in another repo", "file")
+
     if not loc.get("file"):
         err(f"{where}: missing 'file'", "file")
+    jpath = loc.get("json")
     pat = loc.get("pattern")
+    if jpath is not None and pat is not None:
+        err(f"{where}: give 'pattern' or 'json', not both", "json")
+        return
+    if jpath is not None:
+        try:
+            parse_json_path(jpath)
+        except ValueError as exc:
+            err(f"{where}: {exc}", "json")
+        return
     if not pat:
-        err(f"{where}: missing 'pattern'", "pattern")
+        err(f"{where}: missing 'pattern' (or 'json')", "pattern")
         return
     try:
         compiled = re.compile(pat)
@@ -476,6 +611,131 @@ def values_match(canonical, copy, ftype="string", rounding=None):
     except ValueError as exc:
         return False, str(exc)
     return cn == co, ""
+
+
+_MAGNITUDE = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+
+def _floor_number(value):
+    """Parse a floor's number: separators, a currency symbol, a trailing '+'
+    and a K/M/B magnitude suffix ('13.4K+' -> 13400). Floors are written for
+    readers, so the suffix is allowed here and nowhere else."""
+    v = _strip_trailing_plus(value).lstrip(CURRENCY_SYMBOLS).strip()
+    v = re.sub(r"[,_\s]", "", v)
+    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)([kKmMbB]?)", v)
+    if not m:
+        raise ValueError(f"not a number: {value!r}")
+    n = float(m.group(1)) * _MAGNITUDE.get(m.group(2).lower(), 1)
+    if n < 0:
+        raise ValueError(f"floor values must be zero or positive, got "
+                         f"{value!r}")
+    return n
+
+
+def compare_floor(canonical, copy, max_gap_pct=None):
+    """Check a floor copy ('80+ episodes') against the exact canonical.
+
+    A floor may never exceed the canonical (overstated), and, when
+    max_gap_pct is set, may not trail it by more than that percentage
+    (lagging). Returns (ok, direction, detail).
+    """
+    try:
+        cn, co = _floor_number(canonical), _floor_number(copy)
+    except ValueError as exc:
+        return False, None, str(exc)
+    if co > cn:
+        return False, "overstated", (f"floor {copy.strip()!r} is above the "
+                                     f"canonical {canonical.strip()!r}")
+    # Both values are >= 0 here. With a zero canonical the only floor that
+    # is not above it is 0, which has no gap, so the gap check needs cn > 0.
+    if max_gap_pct is not None and cn > 0:
+        gap = (cn - co) / cn * 100
+        if gap > float(max_gap_pct):
+            return False, "floor_lagging", (
+                f"floor {copy.strip()!r} is {gap:.1f}% below the canonical "
+                f"{canonical.strip()!r} (allowed {max_gap_pct}%)")
+    return True, None, ""
+
+
+# --------------------------------------------------------------------------- #
+# JSON locators. `json: a.b.0.c` reads a scalar; a final `#` segment reads the
+# length of the list or object it follows (`episodes.#`).
+# --------------------------------------------------------------------------- #
+def parse_json_path(path):
+    """Split a json path into segments. Raises ValueError when malformed."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("json path is empty")
+    segs = path.split(".")
+    for i, seg in enumerate(segs):
+        if not seg:
+            raise ValueError(f"empty segment in json path {path!r}")
+        if seg == "#" and i != len(segs) - 1:
+            raise ValueError(f"'#' (length) must be the last segment in "
+                             f"{path!r}")
+        if seg != "#" and "#" in seg:
+            raise ValueError(f"'#' must be its own segment in {path!r}")
+    if segs == ["#"]:
+        raise ValueError(f"'#' (length) needs a list or object before it, "
+                         f"e.g. 'episodes.#', not {path!r}")
+    return segs
+
+
+def _json_scalar(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else repr(value)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def extract_json(content, path):
+    """Return (value, line, error). The line is approximate: where the last
+    named key first appears."""
+    try:
+        node = json.loads(content)
+    except ValueError as exc:
+        return None, None, f"not valid JSON ({exc.__class__.__name__})"
+    segs = parse_json_path(path)
+    walked = []
+    for seg in segs:
+        if seg == "#":
+            if not isinstance(node, (list, dict)):
+                return None, None, f"'{'.'.join(walked)}' has no length"
+            node = len(node)
+            break
+        if isinstance(node, dict) and seg in node:
+            node = node[seg]
+        elif isinstance(node, list) and re.fullmatch(r"\d+", seg) and \
+                int(seg) < len(node):
+            node = node[int(seg)]
+        else:
+            return None, None, f"json path not found: {path} (at {seg!r})"
+        walked.append(seg)
+    value = _json_scalar(node)
+    if value is None:
+        return None, None, f"json path {path} is a list or object, not a " \
+                           "value (end it with '#' for its length)"
+    line = None
+    keys = [w for w in walked if not w.isdigit()]
+    if keys:
+        m = re.search(r'"' + re.escape(keys[-1]) + r'"\s*:', content)
+        if m:
+            line = content.count("\n", 0, m.start()) + 1
+    return value, line, None
+
+
+def extract_locator(content, loc):
+    """Return (value, line, match_count, error) for a pattern or json
+    locator. value is None when nothing was extracted."""
+    if loc.get("json") is not None:
+        value, line, error = extract_json(content, loc["json"])
+        return value, line, (1 if value is not None else 0), error
+    value, line, count = extract(content, loc["pattern"])
+    return value, line, count, None
 
 
 # --------------------------------------------------------------------------- #
@@ -701,15 +961,262 @@ def check_freshness(abspath, fresh, today=None):
 
 
 # --------------------------------------------------------------------------- #
+# Named repos. A locator may say `repo: NAME` instead of a `../NAME` path, so
+# a manifest does not hardcode one machine's folder layout. Each name resolves
+# per run, first match wins:
+#   1. --repo NAME=PATH            explicit; used even if missing (no fallback)
+#   2. $SSOT_REPO_<NAME>           explicit; used even if missing (no fallback)
+#   3. $SSOT_REPOS_DIR/NAME        if that directory exists
+#   4. the manifest's repos.NAME.path (default ../NAME), relative to the root
+# Explicit choices never fall through: a typo in an override must not quietly
+# read a different checkout. A repo found nowhere is reported REPO NOT FOUND,
+# with every place that was tried.
+# --------------------------------------------------------------------------- #
+def _repo_env_var(name):
+    return "SSOT_REPO_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
+
+
+def resolve_repos(root, manifest, overrides=None, env=None):
+    """Return {name: {"path": abs-or-None, "via": str, "looked": [paths]}}."""
+    env = os.environ if env is None else env
+    overrides = overrides or {}
+    out = {}
+    for name, rdef in (manifest.get("repos") or {}).items():
+        rdef = rdef if isinstance(rdef, dict) else {}
+        default = rdef.get("path") or f"../{name}"
+        default_abs = os.path.abspath(
+            default if os.path.isabs(default) else _resolve(root, default))
+        explicit = None
+        if name in overrides:
+            explicit = (overrides[name], f"--repo {name}=")
+        elif env.get(_repo_env_var(name)):
+            explicit = (env[_repo_env_var(name)], f"${_repo_env_var(name)}")
+        if explicit:
+            path = os.path.abspath(os.path.expanduser(explicit[0]))
+            ok = os.path.isdir(path)
+            out[name] = {"path": path if ok else None, "via": explicit[1],
+                         "looked": [path]}
+            continue
+        looked = []
+        found = None
+        via = None
+        base = env.get("SSOT_REPOS_DIR")
+        if base:
+            cand = os.path.abspath(os.path.join(os.path.expanduser(base),
+                                                name))
+            looked.append(cand)
+            if os.path.isdir(cand):
+                found, via = cand, "$SSOT_REPOS_DIR"
+        if not found:
+            looked.append(default_abs)
+            if os.path.isdir(default_abs):
+                found, via = default_abs, "manifest default"
+        out[name] = {"path": found, "via": via, "looked": looked}
+    return out
+
+
+def _rel_under_root(root, abspath):
+    """Root-relative '/' path of a resolved file inside root, else None."""
+    if not abspath:
+        return None
+    try:
+        rel = os.path.relpath(os.path.realpath(abspath),
+                              os.path.realpath(root))
+    except ValueError:  # another Windows drive
+        return None
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or \
+            os.path.isabs(rel):
+        return None
+    return rel.replace(os.sep, "/")
+
+
+def _locate(root, loc_file, repo, repos):
+    """Resolve a locator. Returns (abspath, display, cross, error)."""
+    if repo:
+        info = (repos or {}).get(repo)
+        display = f"{repo}:{loc_file}"
+        if not info or not info.get("path"):
+            looked = ", ".join(info["looked"]) if info else "(undeclared)"
+            return None, display, True, f"repo {repo!r} not found " \
+                                         f"(looked in: {looked})"
+        return (os.path.normpath(os.path.join(info["path"], loc_file)),
+                display, True, None)
+    abspath = (os.path.abspath(loc_file) if os.path.isabs(loc_file)
+               else _resolve(root, loc_file))
+    return abspath, loc_file, is_cross_repo(root, loc_file), None
+
+
+# --------------------------------------------------------------------------- #
+# Guards. A `guard` block scans this repo's prose for a fact's value on the
+# same line as one of its anchor words:
+#   STALE VALUE  a `superseded` value is still asserted somewhere
+#   RESTATED     (restated: true) the current value — the canonical's value or
+#                an `also_current` spelling — appears outside the canonical
+#                and the declared copies. The fix is a pointer to the owner,
+#                or, if the copy is legitimate, declaring it under `copies`.
+# Without `restated`, a guard only polices superseded values ("mirror" use: the
+# copies may agree freely, but an old value left behind by a partial update is
+# caught). Guards scan the local repo only; other repos run their own manifest.
+# --------------------------------------------------------------------------- #
+GUARD_DEFAULT_PATHS = ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.rst"]
+
+
+def value_regex(value):
+    """Match a value without matching inside a longer number.
+
+    '77K' must not match '177K'; '9/19' must not match '19/19'. A leading '$'
+    must not block a match, and a trailing '.' or ',' ends a sentence rather
+    than continuing the number — only '.<digit>' or ',<digit>' does. A value
+    that starts or ends with a letter ('11K') must not match inside a longer
+    word either ('11Kbps').
+    """
+    lead = r"(?<![\d,/.])"
+    trail = r"(?![\d/]|[,.]\d)"
+    if value[:1].isalpha():
+        lead = r"(?<![\d,/.A-Za-z])"
+    if value[-1:].isalpha():
+        trail = r"(?![\d/A-Za-z]|[,.]\d)"
+    return re.compile(lead + re.escape(value) + trail, re.IGNORECASE)
+
+
+def _anchor_regexes(anchors):
+    # Whole words only: a bare substring test let 'UI' match 'rebuilt'.
+    return [re.compile(r"\b" + re.escape(a) + r"\b", re.IGNORECASE)
+            for a in anchors]
+
+
+def _path_glob(rel, pattern):
+    """Glob match for guard scope. A trailing '/' means a directory prefix;
+    '**/x' also matches 'x' at the root. As in fnmatch, '*' crosses '/'."""
+    rel = rel.replace(os.sep, "/")
+    if pattern.endswith("/"):
+        return rel.startswith(pattern)
+    if fnmatch.fnmatch(rel, pattern):
+        return True
+    return pattern.startswith("**/") and fnmatch.fnmatch(rel, pattern[3:])
+
+
+def _repo_files(root):
+    """Tracked files when root is in a git work tree, else a filtered walk.
+
+    Run from a subdirectory of a work tree (a manifest that is not at the
+    repo top, or --root pointing inside one), `git ls-files` lists only the
+    tracked files under it, relative to it, so ignored build output is still
+    skipped. A root with nothing tracked (an untracked or ignored folder inside
+    another repo) falls back to the walk rather than scanning nothing.
+    """
+    out = _git(["ls-files", "-z"], root)
+    top = _git(["rev-parse", "--show-toplevel"], root)
+    if out is not None and top:
+        tracked = [p for p in out.split("\0") if p]
+        if tracked or \
+                os.path.realpath(top.strip()) == os.path.realpath(root):
+            return tracked
+    files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in DISCOVER_SKIP_DIRS]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            files.append(os.path.relpath(full, root).replace(os.sep, "/"))
+    return sorted(files)
+
+
+def scan_guard(root, fact, guard, current_values, allowed, ignore_paths,
+               skip_marker=None, manifest_rel=None, files=None,
+               canonical_rel=None):
+    """Return a list of guard findings for one fact.
+
+    The canonical file is skipped entirely: its value is policed by its own
+    pattern, and an owner often records history ("raised from 1,152").
+    """
+    anchors = _anchor_regexes(guard.get("anchors") or [])
+    superseded = [(v, value_regex(v)) for v in guard.get("superseded") or []]
+    restated_on = str(guard.get("restated", "")).lower() == "true"
+    current = [(v, value_regex(v)) for v in current_values] \
+        if restated_on else []
+    paths = guard.get("paths") or GUARD_DEFAULT_PATHS
+    exempt = guard.get("exempt") or []
+    marker = re.compile(skip_marker, re.MULTILINE) if skip_marker else None
+    findings = []
+    for rel in (files if files is not None else _repo_files(root)):
+        if rel == manifest_rel or rel == canonical_rel:
+            continue
+        if not any(_path_glob(rel, p) for p in paths):
+            continue
+        if any(_path_glob(rel, g) for g in list(ignore_paths) + exempt):
+            continue
+        text = _read_file(_resolve(root, rel))
+        if text is None:
+            continue
+        if marker and marker.search(text):
+            continue
+        check_restated = current and rel not in allowed
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if not any(a.search(line) for a in anchors):
+                continue
+            for value, rx in superseded:
+                if rx.search(line):
+                    findings.append({"kind": "stale_value", "file": rel,
+                                     "line": lineno, "value": value,
+                                     "text": line.strip()[:160]})
+                    break
+            if check_restated:
+                for value, rx in current:
+                    if rx.search(line):
+                        findings.append({"kind": "restated", "file": rel,
+                                         "line": lineno, "value": value,
+                                         "text": line.strip()[:160]})
+                        break
+    return findings
+
+
+# --------------------------------------------------------------------------- #
 # check
 # --------------------------------------------------------------------------- #
-def check(root, manifest, fetch=False, today=None):
+def check(root, manifest, fetch=False, today=None, repo_overrides=None,
+          env=None, manifest_path=None):
     """Run a full check. Returns a result dict (also drives --json)."""
     ignore_paths = manifest.get("ignore_paths") or []
+    repos = resolve_repos(root, manifest, repo_overrides, env)
+    skip_marker = manifest.get("guard_skip_marker")
+    manifest_rel = None
+    if manifest_path:
+        try:
+            manifest_rel = os.path.relpath(os.path.abspath(manifest_path),
+                                           os.path.abspath(root)).replace(
+                                               os.sep, "/")
+        except ValueError:
+            # Different Windows drives: the manifest cannot be inside root,
+            # so it is never among the files a guard scans.
+            manifest_rel = None
+    files_cache = []
     fact_results = []
     counts = {"in_sync": 0, "drifted": 0, "canonical_moved": 0,
               "stale_entry": 0, "unverified": 0, "warnings": 0,
-              "freshness_stale": 0}
+              "freshness_stale": 0, "repo_missing": 0, "stale_value": 0,
+              "restated": 0}
+
+    def run_guard(fact, fr, cval, allowed, canonical_rel):
+        guard = fact.get("guard")
+        if not guard:
+            return
+        if not files_cache:
+            files_cache.append(_repo_files(root))
+        current = []
+        if cval is not None:
+            current.append(cval.strip())
+        current += [v for v in guard.get("also_current") or []
+                    if v not in current]
+        found = scan_guard(root, fact, guard, current, allowed, ignore_paths,
+                           skip_marker, manifest_rel, files_cache[0],
+                           canonical_rel)
+        fr["guard"] = {"findings": found,
+                       "restated": str(guard.get("restated", "")).lower()
+                       == "true"}
+        for f in found:
+            counts[f["kind"]] += 1
+        if found and fr["status"] == "in_sync":
+            fr["status"] = found[0]["kind"]
 
     for fact in manifest["facts"]:
         name = fact["name"]
@@ -717,29 +1224,47 @@ def check(root, manifest, fetch=False, today=None):
         monotonic = str(fact.get("monotonic", "")).lower() == "true"
         canon = fact["canonical"]
         cfile = canon["file"]
-        cabs = (os.path.abspath(cfile) if os.path.isabs(cfile)
-                else _resolve(root, cfile))
-        cross_canon = is_cross_repo(root, cfile)
+        cabs, cdisplay, cross_canon, rerr = _locate(root, cfile,
+                                                    canon.get("repo"), repos)
+        fr = {"name": name, "type": ftype, "copies": [],
+              "canonical": {"file": cdisplay}}
+
+        # Files a guard may find the current value in without it being a
+        # stray restatement: the canonical itself and every declared copy.
+        # Membership is by resolved location, so a named repo checked out
+        # under the root is recognised too.
+        canonical_rel = _rel_under_root(root, cabs)
+        allowed = set()
+        if canonical_rel:
+            allowed.add(canonical_rel)
+
+        if rerr:
+            fr["status"] = "repo_missing"
+            fr["canonical"]["error"] = rerr
+            counts["repo_missing"] += 1
+            run_guard(fact, fr, None, allowed, canonical_rel)
+            fact_results.append(fr)
+            continue
         if cross_canon:
             ccontent, csrc = _read_cross_repo(cabs, fetch)
         else:
             ccontent, csrc = _read_file(cabs), "local"
-
-        fr = {"name": name, "type": ftype, "copies": [],
-              "canonical": {"file": cfile, "source": csrc}}
+        fr["canonical"]["source"] = csrc
 
         if ccontent is None:
             fr["status"] = "canonical_moved"
             fr["canonical"]["error"] = "file missing or unreadable"
             counts["canonical_moved"] += 1
+            run_guard(fact, fr, None, allowed, canonical_rel)
             fact_results.append(fr)
             continue
 
-        cval, cline, cmulti = extract(ccontent, canon["pattern"])
+        cval, cline, cmulti, cerr = extract_locator(ccontent, canon)
         if cval is None:
             fr["status"] = "canonical_moved"
-            fr["canonical"]["error"] = "pattern did not match"
+            fr["canonical"]["error"] = cerr or "pattern did not match"
             counts["canonical_moved"] += 1
+            run_guard(fact, fr, None, allowed, canonical_rel)
             fact_results.append(fr)
             continue
 
@@ -756,10 +1281,16 @@ def check(root, manifest, fetch=False, today=None):
                 counts["freshness_stale"] += 1
 
         fact_status = "in_sync"
-        for cp in fact["copies"]:
-            for concrete in _expand_copy_files(root, cp["file"], ignore_paths):
+        for cp in fact.get("copies") or []:
+            concretes = ([cp["file"]] if cp.get("repo") else
+                         _expand_copy_files(root, cp["file"], ignore_paths))
+            for concrete in concretes:
+                copy_rel = _rel_under_root(
+                    root, _locate(root, concrete, cp.get("repo"), repos)[0])
+                if copy_rel:
+                    allowed.add(copy_rel)
                 res = _check_one_copy(root, concrete, cp, cval, ftype,
-                                      monotonic, fetch)
+                                      monotonic, fetch, repos)
                 fr["copies"].append(res)
                 st = res["status"]
                 counts[st] = counts.get(st, 0) + 1
@@ -773,16 +1304,20 @@ def check(root, manifest, fetch=False, today=None):
         if fr.get("freshness", {}).get("stale") and fact_status == "in_sync":
             fact_status = "freshness_stale"
         fr["status"] = fact_status
+        run_guard(fact, fr, cval, allowed, canonical_rel)
         fact_results.append(fr)
 
     problems = (counts["drifted"] + counts["canonical_moved"] +
                 counts["stale_entry"] + counts["unverified"] +
-                counts["freshness_stale"])
+                counts["freshness_stale"] + counts["repo_missing"] +
+                counts["stale_value"] + counts["restated"])
     exit_code = 1 if problems else 0
     return {
         "version": __version__,
         "generated": (today or date.today()).isoformat(),
         "root": os.path.abspath(root),
+        "repos": {n: {"path": r["path"], "via": r["via"],
+                      "looked": r["looked"]} for n, r in repos.items()},
         "facts": fact_results,
         "summary": {
             "facts_checked": len(fact_results),
@@ -793,11 +1328,15 @@ def check(root, manifest, fetch=False, today=None):
     }
 
 
-def _check_one_copy(root, relpath, cp, cval, ftype, monotonic, fetch):
-    cabs = (os.path.abspath(relpath) if os.path.isabs(relpath)
-            else _resolve(root, relpath))
-    cross = is_cross_repo(root, relpath)
-    res = {"file": relpath, "cross_repo": cross}
+def _check_one_copy(root, relpath, cp, cval, ftype, monotonic, fetch,
+                    repos=None):
+    cabs, display, cross, rerr = _locate(root, relpath, cp.get("repo"),
+                                         repos)
+    res = {"file": display, "cross_repo": cross}
+    if rerr:
+        res["status"] = "repo_missing"
+        res["note"] = rerr
+        return res
     if cross:
         content, src = _read_cross_repo(cabs, fetch)
         res["source"] = src
@@ -813,14 +1352,30 @@ def _check_one_copy(root, relpath, cp, cval, ftype, monotonic, fetch):
             res["note"] = "copy file missing or unreadable"
             return res
 
-    val, line, multi = extract(content, cp["pattern"])
+    val, line, multi, xerr = extract_locator(content, cp)
     if val is None:
         res["status"] = "stale_entry"
-        res["note"] = "pattern did not match (copy reworded or removed)"
+        res["note"] = xerr or \
+            "pattern did not match (copy reworded or removed)"
         return res
     res.update({"value": val, "line": line})
     if multi > 1:
         res["warning"] = f"pattern matched {multi}x; used first"
+
+    if cp.get("relation") == "floor":
+        ok, direction, detail = compare_floor(cval, val,
+                                              cp.get("max_gap_pct"))
+        res["relation"] = "floor"
+        if ok:
+            res["status"] = "in_sync"
+        else:
+            res["status"] = "drifted"
+            res["canonical_value"] = cval
+            if direction:
+                res["direction"] = direction
+            if detail:
+                res["note"] = detail
+        return res
 
     rounding = cp.get("rounding")
     matched, detail = values_match(cval, val, ftype, rounding)
@@ -843,13 +1398,16 @@ def _check_one_copy(root, relpath, cp, cval, ftype, monotonic, fetch):
 # --------------------------------------------------------------------------- #
 # explain
 # --------------------------------------------------------------------------- #
-def explain(root, manifest, name, fetch=False):
+def explain(root, manifest, name, fetch=False, repo_overrides=None,
+            env=None, manifest_path=None):
     for fact in manifest["facts"]:
         if fact["name"] == name:
             single = dict(manifest)
             single_fact = dict(fact)
             single["facts"] = [single_fact]
-            return check(root, single, fetch=fetch)
+            return check(root, single, fetch=fetch,
+                         repo_overrides=repo_overrides, env=env,
+                         manifest_path=manifest_path)
     return None
 
 
@@ -1004,12 +1562,15 @@ def _manifest_occurrences(root, manifest):
     for fact in manifest["facts"]:
         ftype = fact.get("type", "string")
         locators = [(fact["canonical"]["file"], fact["canonical"])]
-        for cp in fact["copies"]:
+        for cp in fact.get("copies") or []:
+            if cp.get("repo"):
+                continue
             for concrete in _expand_copy_files(root, cp["file"], ignore_paths):
                 locators.append((concrete, cp))
 
         for relpath, locator in locators:
-            if is_cross_repo(root, relpath):
+            if locator.get("repo") or locator.get("json") is not None or \
+                    is_cross_repo(root, relpath):
                 continue
             content = _read_file(_resolve(root, relpath))
             if content is None:
@@ -1197,8 +1758,10 @@ def render_check(result):
             for cp in f["copies"]:
                 if cp["status"] != "drifted":
                     continue
-                tag = " (canonical suspect)" if cp.get("direction") == \
-                    "canonical_suspect" else ""
+                tag = {"canonical_suspect": " (canonical suspect)",
+                       "overstated": " (floor overstates)",
+                       "floor_lagging": " (floor lagging)"}.get(
+                           cp.get("direction"), "")
                 _print(f"  - {f['name']}{tag} — canonical says "
                        f"{cp.get('canonical_value')!r}, copy says "
                        f"{cp.get('value')!r}")
@@ -1240,6 +1803,40 @@ def render_check(result):
                     _print(f"  - {f['name']} — {cp.get('note')} ({cp['file']})")
         _print("")
 
+    missing = []
+    for f in result["facts"]:
+        if f["status"] == "repo_missing" and "error" in f["canonical"]:
+            missing.append((f["name"], f["canonical"]["file"],
+                            f["canonical"]["error"]))
+        for cp in f["copies"]:
+            if cp["status"] == "repo_missing":
+                missing.append((f["name"], cp["file"], cp.get("note")))
+    if missing:
+        _print(f"REPO NOT FOUND ({len(missing)}):")
+        for name, where, note in missing:
+            _print(f"  - {name} — {where}: {note}")
+        _print("      fix: clone it, or point at it with --repo NAME=PATH, "
+               "$SSOT_REPO_<NAME>, or $SSOT_REPOS_DIR")
+        _print("")
+
+    for kind, title, hint in (
+            ("stale_value", "STALE VALUE",
+             "a superseded value is still asserted"),
+            ("restated", "RESTATED",
+             "the current value is written outside the canonical and its "
+             "declared copies")):
+        rows = [(f, g) for f in result["facts"]
+                for g in f.get("guard", {}).get("findings", [])
+                if g["kind"] == kind]
+        if not rows:
+            continue
+        _print(f"{title} ({len(rows)}) — {hint}:")
+        for f, g in rows:
+            _print(f"  - {f['name']} — {g['file']}:{g['line']} has "
+                   f"{g['value']!r}; owner: {f['canonical']['file']}")
+            _print(f"      {g['text']}")
+        _print("")
+
     fresh_stale = [f for f in result["facts"]
                    if f.get("freshness", {}).get("stale")]
     if fresh_stale:
@@ -1265,6 +1862,13 @@ def render_check(result):
             parts.append(f"{s['unverified']} unverified")
         if s["freshness_stale"]:
             parts.append(f"{s['freshness_stale']} stale canonical")
+        if s.get("repo_missing"):
+            parts.append(f"{s['repo_missing']} repo not found")
+        if s.get("stale_value"):
+            n = s["stale_value"]
+            parts.append(f"{n} stale value{'' if n == 1 else 's'}")
+        if s.get("restated"):
+            parts.append(f"{s['restated']} restated")
     _print(", ".join(parts) + ".")
 
 
@@ -1291,6 +1895,13 @@ def render_explain(result, name):
         val = cp.get("value", "—")
         _print(f"    [{cp['status']}] {cp['file']}:{cp.get('line')} = {val!r}"
                + (f"  ({cp['note']})" if cp.get("note") else ""))
+    if "guard" in f:
+        g = f["guard"]
+        _print(f"  guard ({'superseded + restated' if g['restated'] else 'superseded'}"
+               f"): {len(g['findings'])} finding(s)")
+        for item in g["findings"]:
+            _print(f"    [{item['kind']}] {item['file']}:{item['line']} = "
+                   f"{item['value']!r}")
 
 
 def render_discover(result):
@@ -1427,6 +2038,26 @@ def cmd_validate(args):
     return 0
 
 
+def _repo_overrides(args, manifest=None):
+    out = {}
+    for item in getattr(args, "repo", None) or []:
+        name, sep, path = item.partition("=")
+        if not sep or not name or not path:
+            raise ManifestError(f"--repo expects NAME=PATH, got {item!r}")
+        out[name] = path
+    if manifest is not None:
+        # An override for a name the manifest never declares would be
+        # silently unused — the same quiet misread a typo must not cause.
+        declared = manifest.get("repos") or {}
+        unknown = sorted(n for n in out if n not in declared)
+        if unknown:
+            names = ", ".join(repr(n) for n in unknown)
+            known = ", ".join(sorted(declared)) or "(none)"
+            raise ManifestError(f"--repo names a repo the manifest does not "
+                                f"declare: {names}; declared repos: {known}")
+    return out
+
+
 def cmd_check(args):
     try:
         manifest = load_manifest(args.manifest)
@@ -1440,7 +2071,12 @@ def cmd_check(args):
             print(f"  {e}", file=sys.stderr)
         return 2
     root = args.root or os.path.dirname(os.path.abspath(args.manifest))
-    result = check(root, manifest, fetch=args.fetch)
+    try:
+        overrides = _repo_overrides(args, manifest)
+    except ManifestError as exc:
+        return _fail_config(str(exc))
+    result = check(root, manifest, fetch=args.fetch,
+                   repo_overrides=overrides, manifest_path=args.manifest)
     if args.json:
         print(json.dumps(result, indent=2))
     else:
@@ -1525,7 +2161,12 @@ def cmd_explain(args):
     if errors:
         return _fail_config(f"manifest invalid; run validate ({errors[0]})")
     root = args.root or os.path.dirname(os.path.abspath(args.manifest))
-    result = explain(root, manifest, args.name, fetch=args.fetch)
+    try:
+        overrides = _repo_overrides(args, manifest)
+    except ManifestError as exc:
+        return _fail_config(str(exc))
+    result = explain(root, manifest, args.name, fetch=args.fetch,
+                     repo_overrides=overrides, manifest_path=args.manifest)
     if result is None:
         return _fail_config(f"no fact named {args.name!r} in {args.manifest}")
     if args.json:
@@ -1533,6 +2174,14 @@ def cmd_explain(args):
     else:
         render_explain(result, args.name)
     return 0
+
+
+def _add_repo(sp):
+    sp.add_argument("--repo", action="append", metavar="NAME=PATH",
+                    help="where a named repo (manifest 'repos:') is checked "
+                         "out on this machine; repeatable. Overrides "
+                         "$SSOT_REPO_<NAME>, $SSOT_REPOS_DIR and the "
+                         "manifest default")
 
 
 def _add_fetch(sp):
@@ -1564,6 +2213,7 @@ def build_parser():
     add_common(c)
     c.add_argument("--json", action="store_true", help="machine-readable output")
     _add_fetch(c)
+    _add_repo(c)
     c.set_defaults(func=cmd_check)
 
     v = sub.add_parser("validate", help="check manifest structure")
@@ -1591,6 +2241,7 @@ def build_parser():
     e.add_argument("name", help="fact name")
     e.add_argument("--json", action="store_true", help="machine-readable output")
     _add_fetch(e)
+    _add_repo(e)
     e.set_defaults(func=cmd_explain)
     return p
 
