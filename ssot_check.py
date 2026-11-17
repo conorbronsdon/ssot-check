@@ -94,25 +94,45 @@ def _strip_comment(line):
 
     A `#` only starts a comment when it is at line start or preceded by
     whitespace and not inside quotes. Leading indentation is preserved.
+    A quote only opens a quoted scalar where one can start: at the start of
+    the line, or after whitespace that follows a key's ':' or a '- '. An
+    apostrophe inside a plain value ("it's") is plain text. Inside double
+    quotes a backslash escapes the next character; inside single quotes
+    '' is an escaped quote.
     """
     out = []
     quote = None
-    prev = ""
-    for ch in line:
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
         if quote:
             out.append(ch)
-            if ch == quote:
-                quote = None
+            if quote == '"' and ch == "\\" and i + 1 < n:
+                out.append(line[i + 1])
+                i += 1
+            elif ch == quote:
+                if quote == "'" and line[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 1
+                else:
+                    quote = None
+        elif ch in "'\"" and _starts_scalar("".join(out)):
+            quote = ch
+            out.append(ch)
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            break
         else:
-            if ch in "'\"":
-                quote = ch
-                out.append(ch)
-            elif ch == "#" and (prev == "" or prev in " \t"):
-                break
-            else:
-                out.append(ch)
-        prev = ch
+            out.append(ch)
+        i += 1
     return "".join(out).rstrip()
+
+
+def _starts_scalar(prefix):
+    """True when a quote after `prefix` would begin a scalar."""
+    head = prefix.rstrip(" \t")
+    if head.strip() == "":
+        return True
+    return head != prefix and head[-1] in ":-"
 
 
 def _unquote(scalar):
