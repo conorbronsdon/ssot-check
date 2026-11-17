@@ -145,7 +145,7 @@ class _Parser:
             return None
         s = _strip_comment(self.raw[self.pos])
         indent = len(s) - len(s.lstrip(" "))
-        if "\t" in s[:indent]:
+        if "\t" in s[:len(s) - len(s.lstrip(" \t"))]:
             raise ManifestError("tab in indentation (use spaces)", self.pos + 1)
         return (self.pos + 1, indent, s.strip())
 
