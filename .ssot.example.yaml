@@ -125,3 +125,20 @@ facts:
         - "31K"
       exempt:
         - history/
+
+  # A value read from a JSON file by key path instead of a regex. A final '#'
+  # reads a length: here, how many episodes the feed lists. The README floor
+  # is written by a person ("80+ episodes"), so it is a floor, not an exact
+  # copy: it must not exceed the canonical, and may trail it by at most 10%.
+  - name: episode-count
+    type: integer
+    canonical:
+      file: data/stats.json
+      json: episodes_published
+    copies:
+      - file: data/feed.json
+        json: episodes.#
+      - file: README.md
+        pattern: '(\d+)\+ episodes'
+        relation: floor
+        max_gap_pct: 10
