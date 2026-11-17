@@ -996,6 +996,21 @@ def resolve_repos(root, manifest, overrides=None, env=None):
     return out
 
 
+def _rel_under_root(root, abspath):
+    """Root-relative '/' path of a resolved file inside root, else None."""
+    if not abspath:
+        return None
+    try:
+        rel = os.path.relpath(os.path.realpath(abspath),
+                              os.path.realpath(root))
+    except ValueError:  # another Windows drive
+        return None
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or \
+            os.path.isabs(rel):
+        return None
+    return rel.replace(os.sep, "/")
+
+
 def _locate(root, loc_file, repo, repos):
     """Resolve a locator. Returns (abspath, display, cross, error)."""
     if repo:
@@ -1162,15 +1177,10 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
               "freshness_stale": 0, "repo_missing": 0, "stale_value": 0,
               "restated": 0}
 
-    def run_guard(fact, fr, cval, allowed):
+    def run_guard(fact, fr, cval, allowed, canonical_rel):
         guard = fact.get("guard")
         if not guard:
             return
-        canon = fact["canonical"]
-        canonical_rel = None
-        if not canon.get("repo") and not is_cross_repo(root, canon["file"]):
-            canonical_rel = os.path.normpath(canon["file"]).replace(os.sep,
-                                                                    "/")
         if not files_cache:
             files_cache.append(_repo_files(root))
         current = []
@@ -1202,15 +1212,18 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
 
         # Files a guard may find the current value in without it being a
         # stray restatement: the canonical itself and every declared copy.
+        # Membership is by resolved location, so a named repo checked out
+        # under the root is recognised too.
+        canonical_rel = _rel_under_root(root, cabs)
         allowed = set()
-        if not cross_canon:
-            allowed.add(os.path.normpath(cfile).replace(os.sep, "/"))
+        if canonical_rel:
+            allowed.add(canonical_rel)
 
         if rerr:
             fr["status"] = "repo_missing"
             fr["canonical"]["error"] = rerr
             counts["repo_missing"] += 1
-            run_guard(fact, fr, None, allowed)
+            run_guard(fact, fr, None, allowed, canonical_rel)
             fact_results.append(fr)
             continue
         if cross_canon:
@@ -1223,7 +1236,7 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
             fr["status"] = "canonical_moved"
             fr["canonical"]["error"] = "file missing or unreadable"
             counts["canonical_moved"] += 1
-            run_guard(fact, fr, None, allowed)
+            run_guard(fact, fr, None, allowed, canonical_rel)
             fact_results.append(fr)
             continue
 
@@ -1232,7 +1245,7 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
             fr["status"] = "canonical_moved"
             fr["canonical"]["error"] = cerr or "pattern did not match"
             counts["canonical_moved"] += 1
-            run_guard(fact, fr, None, allowed)
+            run_guard(fact, fr, None, allowed, canonical_rel)
             fact_results.append(fr)
             continue
 
@@ -1253,9 +1266,10 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
             concretes = ([cp["file"]] if cp.get("repo") else
                          _expand_copy_files(root, cp["file"], ignore_paths))
             for concrete in concretes:
-                if not cp.get("repo") and not is_cross_repo(root, concrete):
-                    allowed.add(os.path.normpath(concrete).replace(os.sep,
-                                                                   "/"))
+                copy_rel = _rel_under_root(
+                    root, _locate(root, concrete, cp.get("repo"), repos)[0])
+                if copy_rel:
+                    allowed.add(copy_rel)
                 res = _check_one_copy(root, concrete, cp, cval, ftype,
                                       monotonic, fetch, repos)
                 fr["copies"].append(res)
@@ -1271,7 +1285,7 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
         if fr.get("freshness", {}).get("stale") and fact_status == "in_sync":
             fact_status = "freshness_stale"
         fr["status"] = fact_status
-        run_guard(fact, fr, cval, allowed)
+        run_guard(fact, fr, cval, allowed, canonical_rel)
         fact_results.append(fr)
 
     problems = (counts["drifted"] + counts["canonical_moved"] +
