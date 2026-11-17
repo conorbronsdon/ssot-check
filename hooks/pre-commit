@@ -10,7 +10,11 @@
 # Behavior:
 #   - Soft-fail by default: prints drift and lets the commit proceed (exit 0),
 #     so the hook never blocks work it can't auto-fix.
-#   - Hard-fail with SSOT_STRICT=1: a drift or manifest error aborts the commit.
+#   - Hard-fail with SSOT_STRICT=1: a drift or manifest error aborts the commit,
+#     and so does a check that cannot run: the CLI is not found, or the
+#     manifest named in SSOT_MANIFEST does not exist (exit 2). Strict mode
+#     must never pass quietly. A missing default .ssot.yaml still passes: the
+#     repo may not use ssot-check.
 #
 # Exit codes from ssot_check.py: 0 in sync, 1 drift/staleness, 2 manifest error.
 
@@ -18,6 +22,7 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 MANIFEST="${SSOT_MANIFEST:-$REPO_ROOT/.ssot.yaml}"
+STRICT="${SSOT_STRICT:-0}"
 
 # Locate the CLI: prefer a repo-local copy, else rely on PATH.
 if [ -f "$REPO_ROOT/ssot_check.py" ]; then
@@ -25,12 +30,23 @@ if [ -f "$REPO_ROOT/ssot_check.py" ]; then
 elif command -v ssot-check >/dev/null 2>&1; then
   CLI=(ssot-check)
 else
+  if [ "$STRICT" = "1" ]; then
+    echo "ssot-check: ssot_check.py not found and SSOT_STRICT=1 — commit aborted." >&2
+    echo "Put ssot_check.py at the repo root or ssot-check on PATH." >&2
+    exit 2
+  fi
   echo "ssot-check: ssot_check.py not found; skipping drift check." >&2
   exit 0
 fi
 
-# No manifest → nothing to check (a repo may not use ssot-check yet).
+# No manifest → nothing to check (a repo may not use ssot-check yet), unless
+# the manifest was named explicitly: then a missing file is a typo or a
+# moved manifest, and strict mode must not pass it.
 if [ ! -f "$MANIFEST" ]; then
+  if [ "$STRICT" = "1" ] && [ -n "${SSOT_MANIFEST:-}" ]; then
+    echo "ssot-check: SSOT_MANIFEST=$SSOT_MANIFEST does not exist and SSOT_STRICT=1 — commit aborted." >&2
+    exit 2
+  fi
   exit 0
 fi
 
@@ -43,10 +59,15 @@ if [ "$STATUS" -eq 0 ]; then
   exit 0
 fi
 
-if [ "${SSOT_STRICT:-0}" = "1" ]; then
+if [ "$STRICT" = "1" ]; then
   echo "" >&2
-  echo "ssot-check: drift found and SSOT_STRICT=1 — commit aborted." >&2
-  echo "Fix the drift (or unset SSOT_STRICT to commit anyway)." >&2
+  if [ "$STATUS" -eq 2 ]; then
+    echo "ssot-check: manifest error and SSOT_STRICT=1 — commit aborted." >&2
+    echo "Run ssot_check.py validate for details." >&2
+  else
+    echo "ssot-check: drift found and SSOT_STRICT=1 — commit aborted." >&2
+    echo "Fix the drift (or unset SSOT_STRICT to commit anyway)." >&2
+  fi
   exit 1
 fi
 

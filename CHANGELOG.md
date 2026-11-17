@@ -37,6 +37,13 @@ The project is no longer in maintenance mode; new features are being added.
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
 
+### Fixed
+
+- `hooks/pre-commit` no longer passes quietly in strict mode. With
+  `SSOT_STRICT=1`, a missing CLI or an `SSOT_MANIFEST` that does not exist
+  aborts the commit (exit 2), and a manifest error is reported as one rather
+  than as drift. Non-strict behaviour is unchanged (#26).
+
 ## [0.1.4] — 2026-11-16
 
 ### Fixed
