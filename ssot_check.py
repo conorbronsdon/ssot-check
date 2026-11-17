@@ -992,19 +992,17 @@ def _git_env():
     return dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
 
 
-def _git_safe_args(cwd):
-    """`-c` overrides that stop the repo's config from running commands."""
-    args = []
-    for item in _GIT_SAFE_CONFIG:
-        args += ["-c", item]
+def _git_drivers(cwd):
+    """(section, name) of every filter and diff driver the repo's config
+    defines. Reading config runs nothing."""
     try:
-        # Reading config runs nothing.
         out = subprocess.run(
-            ["git", "config", "--name-only", "--get-regexp",
+            ["git", "config", "-z", "--name-only", "--get-regexp",
              r"^(filter|diff)\."],
             cwd=cwd, capture_output=True, text=True, timeout=30,
             env=_git_env())
-        names = out.stdout.split() if out.returncode == 0 else []
+        # -z: a driver name may contain whitespace.
+        names = out.stdout.split("\0") if out.returncode == 0 else []
     except (OSError, subprocess.SubprocessError):
         names = []
     drivers = set()
@@ -1013,7 +1011,15 @@ def _git_safe_args(cwd):
         driver = rest.rpartition(".")[0]
         if section in _GIT_DRIVER_KEYS and driver:
             drivers.add((section, driver))
-    for section, driver in sorted(drivers):
+    return drivers
+
+
+def _git_safe_args(cwd):
+    """`-c` overrides that stop the repo's config from running commands."""
+    args = []
+    for item in _GIT_SAFE_CONFIG:
+        args += ["-c", item]
+    for section, driver in sorted(_git_drivers(cwd)):
         for key in _GIT_DRIVER_KEYS[section]:
             args += ["-c", f"{section}.{driver}.{key}="]
         if section == "filter":
@@ -1060,6 +1066,25 @@ def _remote_tracking_ref(repo_root):
     return None
 
 
+def _only_filtered_changes(entries, repo_root):
+    """True when every `status -z` entry is an unstaged change to a file
+    that goes through one of the repo's clean filters. With those filters
+    off (see `_git_safe_args`), such a file can look modified when it is not
+    (git-lfs, say), so the change is unconfirmed."""
+    if any(not e.startswith(" M ") for e in entries):
+        return False
+    drivers = {d for sec, d in _git_drivers(repo_root) if sec == "filter"}
+    if not drivers:
+        return False
+    paths = [e[3:] for e in entries]
+    out = _git(["check-attr", "-z", "filter", "--"] + paths, repo_root)
+    if out is None:
+        return False
+    fields = out.split("\0")
+    values = fields[2::3][:len(paths)]
+    return len(values) == len(paths) and all(v in drivers for v in values)
+
+
 def _working_tree_source(abspath):
     """Describe the exact sibling checkout used for a local cross-repo read.
 
@@ -1089,10 +1114,15 @@ def _working_tree_source(abspath):
 
     # --no-optional-locks: plain `status` refreshes stale stat data and
     # rewrites .git/index (taking index.lock); a label must not write.
-    status = _git(["--no-optional-locks", "status", "--porcelain",
-                   "--untracked-files=normal"], repo_root)
-    if status and status.strip():
-        warnings.append("dirty working tree")
+    status = _git(["--no-optional-locks", "status", "--porcelain", "-z",
+                   "--no-renames", "--untracked-files=normal"], repo_root)
+    entries = [e for e in (status or "").split("\0") if e]
+    if entries:
+        if _only_filtered_changes(entries, repo_root):
+            warnings.append("possibly dirty working tree (the repo's git "
+                            "filters were not run)")
+        else:
+            warnings.append("dirty working tree")
 
     warning = f"; WARNING: {'; '.join(warnings)}" if warnings else ""
     return f"local {branch} ({sha}{warning})"

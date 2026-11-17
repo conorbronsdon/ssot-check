@@ -54,7 +54,8 @@ The project is no longer in maintenance mode; new features are being added.
 
 - **Cross-repo reads ignore the sibling repo's config-driven commands.** git
   runs with the system config off, fsmonitor, hooks and automatic maintenance
-  disabled, and the repo's filter and diff drivers blanked.
+  disabled, and the repo's filter and diff drivers blanked. A checkout whose only
+  changes are to filtered files is labelled "possibly dirty".
 - **Copy globs don't follow a symlink out of the repo.** Such a match is a
   stale manifest entry. `fix` and `discover` skip it, and in-repo symlinks
   still work.

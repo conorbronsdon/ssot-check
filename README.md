@@ -386,7 +386,9 @@ branch from masquerading as the state of the repository.
 The sibling's own git configuration is not trusted. Every git command
 ssot-check runs ignores the system config, turns off fsmonitor, hooks and
 automatic maintenance, and blanks any filter or diff driver the repo defines, so
-the repo's config cannot make a read run a command.
+the repo's config cannot make a read run a command. With its clean filters off, a file
+those filters handle (git-lfs, say) can look modified when it is not, so a
+checkout whose only changes are to such files is labelled "possibly dirty".
 
 **With `--fetch`**, and if the sibling is a git repo, `ssot-check` runs
 `git fetch` there and compares against its remote-tracking ref

@@ -834,7 +834,63 @@ class SiblingGitConfigTests(unittest.TestCase):
             self.assertIn("local old-feature (", copy["source"])
             self.assertIn("non-default branch; default is origin/main",
                           copy["source"])
-            self.assertIn("dirty working tree", copy["source"])
+            self.assertIn("; dirty working tree", copy["source"])
+
+    def test_really_dirty_sibling_without_filters_is_labelled_dirty(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertIn("; dirty working tree", copy["source"])
+            self.assertNotIn("possibly", copy["source"])
+
+    def test_driver_name_with_whitespace_is_blanked_too(self):
+        for name in ("pro be", "pro\u00a0be", "pro\tbe"):
+            with self.subTest(name=repr(name)), \
+                    tempfile.TemporaryDirectory() as parent:
+                repo, sib = CrossRepoFetchTests._fixture(self, parent)
+                marker = os.path.join(parent, "ran")
+                write(os.path.join(sib, ".gitattributes"),
+                      f"*.html filter={name}\n" if " " not in name else
+                      "*.html filter=unused\n")
+                probe = '[ -z "$SSOT_PROBE" ] || touch'
+                with open(os.path.join(sib, ".git", "config"), "a",
+                          encoding="utf-8") as fh:
+                    fh.write(f'[filter "{name}"]\n'
+                             f'\tclean = "{probe} \'{marker}.clean\'; cat"\n')
+                os.utime(os.path.join(sib, "page.html"),
+                         (1_000_000, 1_000_000))
+                self.assertIn(("filter", name), sc._git_drivers(sib))
+                args = sc._git_safe_args(sib)
+                self.assertIn(f"filter.{name}.clean=", args)
+                sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST))
+                self.assertEqual(self._ran(parent), [])
+
+    def test_clean_filtered_checkout_is_not_called_dirty(self):
+        """A transforming clean filter that is switched off must not turn an
+        untouched checkout into a confident "dirty working tree"."""
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            git(sib, "checkout", "--quiet", "--", "page.html")
+            write(os.path.join(sib, ".gitattributes"), "*.html filter=up\n")
+            git(sib, "add", ".gitattributes")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "-c", "filter.up.clean=tr a-z A-Z",
+                "commit", "--quiet", "-m", "attrs")
+            git(sib, "-c", "filter.up.clean=tr a-z A-Z",
+                "add", "--renormalize", ".")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "-c", "filter.up.clean=tr a-z A-Z",
+                "commit", "--quiet", "-m", "renorm")
+            with open(os.path.join(sib, ".git", "config"), "a",
+                      encoding="utf-8") as fh:
+                fh.write('[filter "up"]\n\tclean = tr a-z A-Z\n')
+            os.utime(os.path.join(sib, "page.html"), (1_000_000, 1_000_000))
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertEqual(copy["value"], "49")
+            self.assertNotIn("; dirty working tree", copy["source"])
+            self.assertIn("possibly dirty working tree", copy["source"])
 
     def test_fetch_runs_no_sibling_configured_command(self):
         with tempfile.TemporaryDirectory() as parent:
