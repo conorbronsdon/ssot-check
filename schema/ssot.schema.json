@@ -12,6 +12,22 @@
       "description": "Glob patterns excluded from globbed copy expansion and from discover scans.",
       "items": { "type": "string" }
     },
+    "repos": {
+      "type": "object",
+      "description": "Named repos that locators reference with `repo: NAME`. Each run resolves a name via --repo NAME=PATH, then $SSOT_REPO_<NAME>, then $SSOT_REPOS_DIR/NAME, then this path (default ../NAME, relative to the root).",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+      "additionalProperties": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Default checkout location, relative to the root or absolute." }
+        }
+      }
+    },
+    "guard_skip_marker": {
+      "type": "string",
+      "description": "Regex (multiline). Files containing a match are skipped by every guard, e.g. a '**Status:** snapshot' header on point-in-time records."
+    },
     "facts": {
       "type": "array",
       "minItems": 1,
@@ -21,7 +37,8 @@
   "definitions": {
     "fact": {
       "type": "object",
-      "required": ["name", "canonical", "copies"],
+      "required": ["name", "canonical"],
+      "anyOf": [{ "required": ["copies"] }, { "required": ["guard"] }],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -57,30 +74,77 @@
         "copies": {
           "type": "array",
           "minItems": 1,
+          "description": "Every other place the value is written. Required unless the fact has a guard; a guarded fact with no copies means every other mention should point to the canonical.",
           "items": { "$ref": "#/definitions/copy" }
-        }
+        },
+        "guard": { "$ref": "#/definitions/guard" }
+      }
+    },
+    "json_path": {
+      "type": "string",
+      "pattern": "^[^.#]+(\\.[^.#]+)*(\\.#)?$",
+      "description": "Dot-separated keys and list indexes into a JSON file. A final '#' reads the length of the list or object before it."
+    },
+    "guard": {
+      "type": "object",
+      "required": ["anchors"],
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["superseded"], "properties": { "superseded": { "minItems": 1 } } },
+        { "required": ["restated"], "properties": { "restated": { "const": true } } }
+      ],
+      "if": { "required": ["also_current"], "properties": { "also_current": { "minItems": 1 } } },
+      "then": { "required": ["restated"], "properties": { "restated": { "const": true } } },
+      "description": "Scan this repo's prose for the fact's value on the same line as an anchor word. STALE VALUE: a superseded value appears. RESTATED (restated: true): the current value appears outside the canonical and declared copies.",
+      "properties": {
+        "anchors": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Whole words, case-insensitive. A value is only reported on a line that also contains one." },
+        "superseded": { "type": "array", "items": { "type": "string" }, "description": "Old values that must no longer be asserted." },
+        "restated": { "type": "boolean", "default": false, "description": "Also report the current value (the canonical's value plus also_current) anywhere except the canonical and declared copies." },
+        "also_current": { "type": "array", "items": { "type": "string" }, "description": "Other spellings of the current value, e.g. '31K' beside '31,408'. Requires restated: true." },
+        "paths": { "type": "array", "items": { "type": "string" }, "description": "Globs to scan. Default: **/*.md, **/*.markdown, **/*.txt, **/*.rst. A trailing '/' means a directory prefix." },
+        "exempt": { "type": "array", "items": { "type": "string" }, "description": "Globs or directory prefixes (trailing '/') to skip, on top of ignore_paths." }
       }
     },
     "locator": {
       "type": "object",
-      "required": ["file", "pattern"],
+      "required": ["file"],
+      "oneOf": [{ "required": ["pattern"] }, { "required": ["json"] }],
       "additionalProperties": false,
       "properties": {
+        "json": { "$ref": "#/definitions/json_path" },
         "file": {
           "type": "string",
-          "description": "Forward-slash path relative to repo root. May escape the root (../sibling) for a cross-repo, read-only location."
+          "description": "Forward-slash path relative to repo root, or to the named repo when 'repo' is set. May escape the root (../sibling) for a cross-repo, read-only location."
         },
         "pattern": {
           "type": "string",
           "description": "Regex with exactly ONE capture group around the value."
+        },
+        "repo": {
+          "type": "string",
+          "description": "Name of a repo declared under top-level 'repos'. 'file' is then relative to that repo and may not contain '..' or a glob."
         }
       }
     },
     "copy": {
       "type": "object",
-      "required": ["file", "pattern"],
+      "required": ["file"],
+      "oneOf": [{ "required": ["pattern"] }, { "required": ["json"] }],
       "additionalProperties": false,
       "properties": {
+        "json": { "$ref": "#/definitions/json_path" },
+        "relation": {
+          "type": "string",
+          "enum": ["equal", "floor"],
+          "default": "equal",
+          "description": "floor: the copy is a reader-facing floor that must be at or below the canonical (integer or currency facts only; not with rounding)."
+        },
+        "max_gap_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 100,
+          "description": "With relation floor: the largest percentage the floor may trail the canonical."
+        },
         "file": {
           "type": "string",
           "description": "Copy location. May be a glob (docs/*.md) for local paths."
@@ -90,6 +154,10 @@
           "description": "Regex with exactly ONE capture group around the value."
         },
         "note": { "type": "string" },
+        "repo": {
+          "type": "string",
+          "description": "Name of a repo declared under top-level 'repos'. 'file' is then relative to that repo and may not contain '..' or a glob."
+        },
         "rounding": {
           "type": "string",
           "enum": ["floor-10", "floor-100", "floor-1000", "floor-1000-as-K"],

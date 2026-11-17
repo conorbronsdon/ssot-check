@@ -6,8 +6,33 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+The project is no longer in maintenance mode; new features are being added.
+
 ### Added
 
+- **Guards.** A fact may carry a `guard` that scans the repo's prose for its
+  value on lines that contain an anchor word. `superseded` values still present
+  are reported as **STALE VALUE**; with `restated: true`, the current value
+  (the canonical's value plus `also_current` spellings) outside the canonical
+  and declared copies is reported as **RESTATED**. `paths`, `exempt` and a
+  top-level `guard_skip_marker` set the scope. A guarded fact may have no
+  `copies`. Values match as whole numbers (`77K` never matches `177K`) and
+  anchors as whole words. Both findings exit `1`.
+- **Named repos.** A top-level `repos:` map and a `repo:` key on any locator
+  replace hardcoded `../sibling` paths. Names resolve from `--repo NAME=PATH`,
+  `$SSOT_REPO_<NAME>`, `$SSOT_REPOS_DIR/<name>`, then the manifest's `path`
+  (default `../<name>`); explicit overrides never fall back. A repo found
+  nowhere is reported as **REPO NOT FOUND** with every location tried, instead
+  of as a moved canonical or an unverified copy. Exits `1`.
+- `check --json` includes a `repos` block showing how each name resolved.
+- **JSON locators.** A canonical or copy may give `json: a.b.0.c` instead of
+  `pattern`, reading a scalar from a JSON file; a final `#` segment reads the
+  length of a list or object (`episodes.#`). A missing path reports where it
+  stopped.
+- **Floors.** A copy with `relation: floor` passes when at or below the
+  canonical and, with `max_gap_pct`, within that percentage of it. Floors may
+  use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
+  **DRIFTED (floor lagging)**.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).

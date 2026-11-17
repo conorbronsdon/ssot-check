@@ -1,0 +1,301 @@
+"""Tests for json locators and floor copies.
+Run: python3 -m unittest discover tests
+"""
+
+import io
+import json
+import os
+import sys
+import tempfile
+import textwrap
+import unittest
+import unittest.mock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import ssot_check as sc  # noqa: E402
+
+
+def write(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def manifest(text):
+    m = sc.parse_manifest(textwrap.dedent(text))
+    errors = sc.validate_manifest(m)
+    if errors:
+        raise AssertionError(errors)
+    return m
+
+
+DATA = {"episodes_published": 82, "combined_reach": 170020,
+        "nested": {"list": [{"price": 4.5}, {"price": 400.0}]},
+        "flag": True, "episodes": [{"n": 1}, {"n": 2}, {"n": 3}]}
+
+
+class JsonExtractTests(unittest.TestCase):
+    def value(self, path, data=DATA):
+        return sc.extract_json(json.dumps(data, indent=2), path)
+
+    def test_scalars(self):
+        self.assertEqual(self.value("episodes_published")[0], "82")
+        self.assertEqual(self.value("nested.list.0.price")[0], "4.5")
+        self.assertEqual(self.value("nested.list.1.price")[0], "400")
+        self.assertEqual(self.value("flag")[0], "true")
+
+    def test_length(self):
+        self.assertEqual(self.value("episodes.#")[0], "3")
+        self.assertEqual(self.value("nested.#")[0], "1")
+
+    def test_line_is_where_the_last_key_appears(self):
+        value, line, err = self.value("combined_reach")
+        text = json.dumps(DATA, indent=2).splitlines()
+        self.assertIn('"combined_reach"', text[line - 1])
+
+    def test_errors(self):
+        for path, needle in (("missing", "not found"),
+                             ("nested.list.9", "not found"),
+                             ("nested", "not a value"),
+                             ("flag.#", "no length")):
+            with self.subTest(path=path):
+                value, _, err = self.value(path)
+                self.assertIsNone(value)
+                self.assertIn(needle, err)
+        self.assertIn("not valid JSON",
+                      sc.extract_json("{oops", "a")[2])
+
+    def test_path_syntax(self):
+        for bad in ("", "a..b", "#.a", "a#", "#"):
+            with self.subTest(path=bad), self.assertRaises(ValueError):
+                sc.parse_json_path(bad)
+
+
+JSON_FACT = """\
+    facts:
+      - name: episode-count
+        type: integer
+        canonical:
+          file: data.json
+          json: episodes_published
+        copies:
+          - file: feed.json
+            json: episodes.#
+          - file: README.md
+            pattern: 'Total Episodes:\\*\\* (\\d+)'
+    """
+
+
+class JsonCheckTests(unittest.TestCase):
+    def layout(self, tmp, feed_len=82, readme=82):
+        write(os.path.join(tmp, "data.json"), json.dumps(DATA))
+        write(os.path.join(tmp, "feed.json"),
+              json.dumps({"episodes": [{}] * feed_len}))
+        write(os.path.join(tmp, "README.md"),
+              f"**Total Episodes:** {readme}\n")
+
+    def test_in_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.layout(tmp)
+            r = sc.check(tmp, manifest(JSON_FACT), env={})
+            self.assertEqual(r["exit_code"], 0, r)
+
+    def test_json_copy_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.layout(tmp, feed_len=81)
+            r = sc.check(tmp, manifest(JSON_FACT), env={})
+            bad = [c for c in r["facts"][0]["copies"]
+                   if c["status"] != "in_sync"]
+            self.assertEqual([(c["file"], c["status"], c["value"])
+                              for c in bad], [("feed.json", "drifted", "81")])
+
+    def test_missing_key_is_canonical_moved_with_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.layout(tmp)
+            write(os.path.join(tmp, "data.json"), json.dumps({"other": 1}))
+            r = sc.check(tmp, manifest(JSON_FACT), env={})
+            f = r["facts"][0]
+            self.assertEqual(f["status"], "canonical_moved")
+            self.assertIn("json path not found", f["canonical"]["error"])
+
+    def test_bare_length_path_is_rejected_clearly(self):
+        with self.assertRaises(ValueError) as cm:
+            sc.parse_json_path("#")
+        self.assertIn("needs a list or object before it", str(cm.exception))
+        # Complement: '#' after a key is still the length.
+        self.assertEqual(sc.parse_json_path("episodes.#"), ["episodes", "#"])
+
+    def test_validation(self):
+        def errs(text):
+            return sc.validate_manifest(sc.parse_manifest(
+                textwrap.dedent(text)))
+        bare = JSON_FACT.replace("json: episodes.#", "json: '#'")
+        self.assertTrue(any("needs a list or object" in e
+                            for e in errs(bare)), errs(bare))
+        both = JSON_FACT.replace("json: episodes_published",
+                                 "json: episodes_published\n"
+                                 "          pattern: '(x)'")
+        self.assertTrue(any("not both" in e for e in errs(both)))
+        badpath = JSON_FACT.replace("json: episodes.#", "json: '#.x'")
+        self.assertTrue(any("last segment" in e for e in errs(badpath)))
+        neither = JSON_FACT.replace("          json: episodes_published\n",
+                                    "")
+        self.assertTrue(any("'json'" in e for e in errs(neither)))
+
+
+FLOOR_FACT = """\
+    facts:
+      - name: subscribers
+        type: integer
+        canonical:
+          file: goals.md
+          pattern: 'Subscribers: ([\\d,]+)'
+        copies:
+          - file: ad.md
+            pattern: '([\\d,.]+[KkMm]?)\\+ readers'
+            relation: floor
+            max_gap_pct: 10
+    """
+
+
+class FloorTests(unittest.TestCase):
+    def run_floor(self, canonical, copy, text=FLOOR_FACT):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "goals.md"), f"Subscribers: {canonical}\n")
+            write(os.path.join(tmp, "ad.md"), f"Join {copy}+ readers\n")
+            r = sc.check(tmp, manifest(text), env={})
+            return r, r["facts"][0]["copies"][0]
+
+    def test_within_gap_is_in_sync(self):
+        for copy in ("1,200", "1.2K", "1,268", "1,150"):
+            with self.subTest(copy=copy):
+                r, cp = self.run_floor("1,268", copy)
+                self.assertEqual(cp["status"], "in_sync", cp)
+                self.assertEqual(r["exit_code"], 0)
+
+    def test_lagging_floor_fires(self):
+        r, cp = self.run_floor("1,268", "1,100")   # 13.2% below
+        self.assertEqual((cp["status"], cp["direction"]),
+                         ("drifted", "floor_lagging"))
+        self.assertIn("13.2%", cp["note"])
+        self.assertEqual(r["exit_code"], 1)
+
+    def test_overstated_floor_fires(self):
+        r, cp = self.run_floor("1,268", "1.3K")
+        self.assertEqual((cp["status"], cp["direction"]),
+                         ("drifted", "overstated"))
+
+    def test_no_gap_only_checks_overstatement(self):
+        text = FLOOR_FACT.replace("            max_gap_pct: 10\n", "")
+        _, cp = self.run_floor("1,268", "500", text)
+        self.assertEqual(cp["status"], "in_sync")
+        _, cp = self.run_floor("1,268", "1,269", text)
+        self.assertEqual(cp["direction"], "overstated")
+
+    def test_equal_relation_is_still_exact(self):
+        # Complement: without relation floor, '1,200' vs '1,268' is drift.
+        text = FLOOR_FACT.replace("            relation: floor\n"
+                                  "            max_gap_pct: 10\n", "")
+        _, cp = self.run_floor("1,268", "1,200", text)
+        self.assertEqual(cp["status"], "drifted")
+        self.assertNotIn("direction", cp)
+
+    SIGNED = FLOOR_FACT.replace("'Subscribers: ([\\d,]+)'",
+                                "'Subscribers: (-?[\\d,]+)'").replace(
+        "'([\\d,.]+[KkMm]?)\\+ readers'", "'(-?[\\d,.]+[KkMm]?)\\+ readers'")
+
+    def test_negative_values_are_refused_not_passed(self):
+        # cn < 0 used to skip the gap check: -5,000 "passed" against -1,000.
+        self.assertIn("(-?", self.SIGNED)
+        for canonical, copy in (("-1,000", "-5,000"), ("1,000", "-5"),
+                                ("-1,000", "-1,000")):
+            with self.subTest(canonical=canonical, copy=copy):
+                r, cp = self.run_floor(canonical, copy, self.SIGNED)
+                self.assertEqual(cp["status"], "drifted", cp)
+                self.assertIn("zero or positive", cp["note"])
+                self.assertEqual(r["exit_code"], 1)
+
+    def test_zero_canonical_is_defined(self):
+        # Zero canonical: a zero floor is in sync (no gap); anything above it
+        # overstates. Must-not-fire and must-fire on the same manifest.
+        _, cp = self.run_floor("0", "0", self.SIGNED)
+        self.assertEqual(cp["status"], "in_sync", cp)
+        _, cp = self.run_floor("0", "5", self.SIGNED)
+        self.assertEqual((cp["status"], cp["direction"]),
+                         ("drifted", "overstated"))
+        # Ordinary positive floors still pass with the signed patterns.
+        _, cp = self.run_floor("1,268", "1,200", self.SIGNED)
+        self.assertEqual(cp["status"], "in_sync", cp)
+
+    def test_render_tags(self):
+        r, _ = self.run_floor("1,268", "1,100")
+        buf = io.StringIO()
+        with unittest.mock.patch("sys.stdout", buf):
+            sc.render_check(r)
+        self.assertIn("(floor lagging)", buf.getvalue())
+        self.assertIn("13.2% below", buf.getvalue())
+
+    def test_floor_number_parsing(self):
+        self.assertEqual(sc._floor_number("13.4K+"), 13400)
+        self.assertEqual(sc._floor_number("$5k"), 5000)
+        self.assertEqual(sc._floor_number("2M"), 2_000_000)
+        with self.assertRaises(ValueError):
+            sc._floor_number("lots")
+
+    def test_validation(self):
+        def errs(text):
+            return sc.validate_manifest(sc.parse_manifest(
+                textwrap.dedent(text)))
+        self.assertTrue(any("integer or currency" in e for e in errs(
+            FLOOR_FACT.replace("type: integer", "type: string"))))
+        self.assertTrue(any("cannot be combined" in e for e in errs(
+            FLOOR_FACT.replace("max_gap_pct: 10",
+                               "max_gap_pct: 10\n"
+                               "            rounding: floor-100"))))
+        self.assertTrue(any("needs relation: floor" in e for e in errs(
+            FLOOR_FACT.replace("            relation: floor\n", ""))))
+        self.assertTrue(any("between 0 and 100" in e for e in errs(
+            FLOOR_FACT.replace("max_gap_pct: 10", "max_gap_pct: 150"))))
+        # Fractions the JSON Schema accepts are accepted here too.
+        for ok in (".5", "0.5", "5.", "99.9"):
+            with self.subTest(max_gap_pct=ok):
+                self.assertEqual(errs(FLOOR_FACT.replace(
+                    "max_gap_pct: 10", f"max_gap_pct: {ok}")), [])
+        for bad in ("0", "-5", "100", "abc", "."):
+            with self.subTest(max_gap_pct=bad):
+                self.assertTrue(any("between 0 and 100" in e for e in errs(
+                    FLOOR_FACT.replace("max_gap_pct: 10",
+                                       f"max_gap_pct: '{bad}'"))))
+        self.assertTrue(any("relation" in e for e in errs(
+            FLOOR_FACT.replace("relation: floor", "relation: ceiling"))))
+
+
+try:
+    import jsonschema
+except ImportError:  # pragma: no cover - optional; the tool is stdlib-only
+    jsonschema = None
+
+
+@unittest.skipUnless(jsonschema, "jsonschema not installed")
+class SchemaJsonPathTests(unittest.TestCase):
+    def test_json_path_pattern(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "schema", "ssot.schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        sub = dict(schema["definitions"]["json_path"],
+                   definitions=schema["definitions"])
+        for path, ok in (("#", False), ("#.a", False), ("a", True),
+                         ("episodes.#", True), ("a.0.b", True)):
+            with self.subTest(path=path):
+                valid = True
+                try:
+                    jsonschema.validate(path, sub)
+                except jsonschema.ValidationError:
+                    valid = False
+                self.assertEqual(valid, ok)
+
+
+if __name__ == "__main__":
+    unittest.main()
