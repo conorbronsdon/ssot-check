@@ -68,7 +68,13 @@ jobs:
       - name: Create the tag if it is missing
         run: |
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG exists at $(git rev-list -n1 "$TAG"); not moving it."
+            # Never move a tag, but never release a wrong one either: the tagged source
+            # must carry exactly this version.
+            if ! git show "$TAG:ssot_check.py" | grep -qx "__version__ = \"$VERSION\""; then
+              echo "::error::Tag $TAG exists but its ssot_check.py does not set __version__ = \"$VERSION\"; fix the tag by hand."
+              exit 1
+            fi
+            echo "Tag $TAG exists at $(git rev-list -n1 "$TAG") and carries $VERSION; not moving it."
             exit 0
           fi
           # Tag the commit that introduced this version, not whatever HEAD is now,
@@ -89,6 +95,9 @@ jobs:
             echo "Release $TAG exists; nothing to do."
             exit 0
           fi
-          python3 scripts/release_meta.py notes "$VERSION" --out "$RUNNER_TEMP/notes.md"
+          # Notes come from the tagged commit, so a catch-up after later main commits
+          # publishes the changelog as released.
+          git show "$TAG:CHANGELOG.md" > "$RUNNER_TEMP/tagged-CHANGELOG.md"
+          python3 scripts/release_meta.py notes "$VERSION" --file "$RUNNER_TEMP/tagged-CHANGELOG.md" --out "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           echo "Released $TAG (the Actions Marketplace listing follows the release)."

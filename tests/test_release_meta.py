@@ -58,6 +58,24 @@ class ChangelogTests(unittest.TestCase):
         # the last section stops at the link references, not the end of the file
         self.assertEqual(rm.changelog_notes(CHANGELOG, '0.1.4'), '### Fixed\n\n- Something old.\n')
 
+    def test_heading_dash_variants_are_accepted(self):
+        for dash in ('\u2014', '\u2013', '-'):
+            text = CHANGELOG.replace('## [0.2.0] \u2014 2026-12-01', '## [0.2.0] ' + dash + ' 2026-12-01')
+            with self.subTest(dash=dash):
+                self.assertEqual(rm.changelog_date(text, '0.2.0'), '2026-12-01')
+                self.assertEqual(rm.changelog_notes(text, '0.2.0'), '### Added\n\n- Something new.\n')
+
+    def test_notes_read_the_given_changelog_file(self):
+        # the workflow passes the tagged commit's changelog, so later edits on main can't change the notes
+        tmp = Path(tempfile.mkdtemp())
+        tagged = tmp / 'tagged-CHANGELOG.md'
+        tagged.write_text(CHANGELOG, encoding='utf-8')
+        out = tmp / 'notes.md'
+        r = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'release_meta.py'), 'notes', '0.2.0',
+                            '--file', str(tagged), '--out', str(out)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(out.read_text(encoding='utf-8'), '### Added\n\n- Something new.\n')
+
     def test_empty_section_is_refused(self):
         empty = CHANGELOG.replace('### Added\n\n- Something new.\n\n', '')
         with self.assertRaises(rm.ReleaseError):

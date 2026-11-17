@@ -5,7 +5,7 @@ Merging a version bump to main is the release. This script holds every decision 
 workflow makes, so each one is unit-tested (tests/test_release_meta.py):
 
     python3 scripts/release_meta.py plan [--tags "v0.1.3 v0.1.4"] [--github-output FILE]
-    python3 scripts/release_meta.py notes VERSION [--out FILE]
+    python3 scripts/release_meta.py notes VERSION [--file CHANGELOG] [--out FILE]
 
 `plan` reads the canonical version from ssot_check.py, requires a dated
 `## [X.Y.Z] — YYYY-MM-DD` changelog heading for it, and compares it with the existing
@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_RE = re.compile(r'^__version__\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', re.M)
-HEADING_RE = re.compile(r'^## \[([0-9]+\.[0-9]+\.[0-9]+)\] — ([0-9]{4}-[0-9]{2}-[0-9]{2})\s*$', re.M)
+HEADING_RE = re.compile(r'^## \[([0-9]+\.[0-9]+\.[0-9]+)\] [\u2014\u2013-] ([0-9]{4}-[0-9]{2}-[0-9]{2})\s*$', re.M)
 TAG_RE = re.compile(r'^v([0-9]+)\.([0-9]+)\.([0-9]+)$')
 
 
@@ -107,6 +107,8 @@ def main(argv=None):
     p_plan.add_argument('--github-output', type=Path)
     p_notes = sub.add_parser('notes')
     p_notes.add_argument('version')
+    p_notes.add_argument('--file', type=Path, help='changelog to read (default: CHANGELOG.md); '
+                         'the workflow passes the tagged commit\'s copy')
     p_notes.add_argument('--out', type=Path)
     args = parser.parse_args(argv)
     try:
@@ -118,7 +120,8 @@ def main(argv=None):
                 with open(args.github_output, 'a', encoding='utf-8') as fh:
                     fh.write('\n'.join(lines) + '\n')
         else:
-            text = changelog_notes((ROOT / 'CHANGELOG.md').read_text(encoding='utf-8'), args.version)
+            source = args.file or (ROOT / 'CHANGELOG.md')
+            text = changelog_notes(source.read_text(encoding='utf-8'), args.version)
             if args.out:
                 args.out.write_text(text, encoding='utf-8')
             else:
