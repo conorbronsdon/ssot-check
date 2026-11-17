@@ -368,6 +368,16 @@ class CheckTests(unittest.TestCase):
                           - file: 'docs/*.md'
                             pattern: '(\\d+) episodes shipped'
                     """)
+                if ignore:
+                    # Positive control: without ignore_paths the same fixture
+                    # checks docs/a.md, so the stale entry below is caused by
+                    # the exclusion, not by a glob that failed to expand.
+                    ctrl = sc.check(tmp, sc.parse_manifest(
+                        manifest[len(ignore):]))
+                    self.assertEqual(
+                        [(c["file"], c["status"])
+                         for c in ctrl["facts"][0]["copies"]],
+                        [("docs/a.md", "in_sync")])
                 result = sc.check(tmp, sc.parse_manifest(manifest))
                 fact = result["facts"][0]
                 self.assertEqual(result["exit_code"], 1)
