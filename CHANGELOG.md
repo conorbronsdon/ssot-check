@@ -33,6 +33,11 @@ The project is no longer in maintenance mode; new features are being added.
   canonical and, with `max_gap_pct`, within that percentage of it. Floors may
   use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
   **DRIFTED (floor lagging)**.
+- **`fleet` subcommand.** Checks several repos, each with its own manifest and
+  root, and gives one report and one exit code (`2` for any invalid
+  manifest, `1` for any problems or missing repo directory, else `0`). Repos
+  come from the command line or a fleet file; a repo without a manifest is
+  skipped.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).

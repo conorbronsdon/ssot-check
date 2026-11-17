@@ -59,6 +59,7 @@ python3 ssot_check.py <command> [options]
   validate   structural check of the manifest against the schema
   discover   propose drift-prone facts from prose (writes nothing)
   explain    show one fact's canonical value and all copies
+  fleet      check several repos, one combined report and exit code
 ```
 
 Common options (`check`, `validate`, `explain`):
@@ -413,6 +414,34 @@ anchors/aliases (`&`/`*`), explicit tags (`!!str`), multiple documents (`---`),
 sequence items on the same line as their key, and tab indentation (use spaces).
 `validate` reports a friendly error with a line number when the manifest strays
 outside the subset.
+
+## Fleet
+
+When several repositories each keep a `.ssot.yaml`, `fleet` checks them all
+and reports once:
+
+```bash
+python3 ssot_check.py fleet ~/site ~/docs ~/marketing
+python3 ssot_check.py fleet --fleet fleet.yaml
+```
+
+Each repo is checked exactly as `check` would check it from its own root.
+A fleet file lists the repos, relative to the file, with an optional
+manifest path for a repo whose manifest is not `.ssot.yaml` at its root:
+
+```yaml
+repos:
+  - ../site
+  - path: ../docs
+    manifest: config/ssot.yaml
+```
+
+The report gives one line per repo, then the full `check` output for each repo
+with problems. The exit code is the worst case: `2` if any manifest is
+invalid, `1` if any repo has problems or its directory is missing, else `0`. A
+repo without a manifest is listed as skipped and does not fail the run.
+`--repo NAME=PATH` applies to every manifest that declares `NAME`, and is a
+configuration error if none does. `--fetch` and `--json` work as for `check`.
 
 ## Skill wrapper
 

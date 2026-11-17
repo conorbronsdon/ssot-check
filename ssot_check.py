@@ -2141,6 +2141,155 @@ def cmd_check(args):
     return result["exit_code"]
 
 
+# --------------------------------------------------------------------------- #
+# fleet: run `check` in several repos and report once. Each repo is checked
+# exactly as `check` would check it from its own root with its own manifest;
+# fleet adds nothing but the loop, a combined summary and one exit code.
+# --------------------------------------------------------------------------- #
+def load_fleet_file(path):
+    """Read a fleet file: `repos:` as a list of paths relative to the file,
+    or of {path, manifest} mappings. Raises ManifestError."""
+    data = load_manifest(path)
+    entries = data.get("repos")
+    if not isinstance(entries, list) or not entries:
+        raise ManifestError(f"{path}: needs a non-empty 'repos:' list")
+    base = os.path.dirname(os.path.abspath(path))
+    out = []
+    for i, item in enumerate(entries):
+        if isinstance(item, str):
+            item = {"path": item}
+        if not isinstance(item, dict) or not isinstance(item.get("path"),
+                                                        str):
+            raise ManifestError(f"{path}: repos[{i}] must be a path or a "
+                                "{path, manifest} mapping")
+        manifest = item.get("manifest", ".ssot.yaml")
+        if not isinstance(manifest, str):
+            raise ManifestError(f"{path}: repos[{i}].manifest must be a "
+                                "string")
+        rp = os.path.expanduser(item["path"])
+        out.append({"path": rp if os.path.isabs(rp) else
+                    os.path.normpath(os.path.join(base, rp)),
+                    "manifest": manifest})
+    return out
+
+
+def fleet(entries, fetch=False, repo_overrides=None, env=None, today=None):
+    """Check every entry. Returns a combined result dict."""
+    repo_overrides = repo_overrides or {}
+    results = []
+    for entry in entries:
+        root = os.path.abspath(os.path.expanduser(entry["path"]))
+        mpath = os.path.join(root, entry.get("manifest") or ".ssot.yaml")
+        row = {"repo": os.path.basename(root.rstrip(os.sep)) or root,
+               "root": root, "manifest": mpath}
+        if not os.path.isdir(root):
+            row.update(status="repo_missing",
+                       note=f"directory not found: {root}")
+        elif not os.path.isfile(mpath):
+            row.update(status="no_manifest",
+                       note=f"no {entry.get('manifest') or '.ssot.yaml'}")
+        else:
+            try:
+                manifest = load_manifest(mpath)
+                errors = validate_manifest(manifest)
+            except ManifestError as exc:
+                errors = [str(exc)]
+            if errors:
+                row.update(status="config_error", note=errors[0],
+                           errors=errors)
+            else:
+                declared = manifest.get("repos") or {}
+                mine = {n: p for n, p in repo_overrides.items()
+                        if n in declared}
+                res = check(root, manifest, fetch=fetch, today=today,
+                            repo_overrides=mine, env=env,
+                            manifest_path=mpath)
+                row.update(status="ok" if res["exit_code"] == 0
+                           else "problems", result=res)
+        results.append(row)
+    declared_anywhere = set()
+    for row in results:
+        if "result" in row:
+            declared_anywhere.update(row["result"].get("repos") or {})
+    statuses = [r["status"] for r in results]
+    if "config_error" in statuses:
+        code = 2
+    elif "problems" in statuses or "repo_missing" in statuses:
+        code = 1
+    else:
+        code = 0
+    return {"version": __version__,
+            "generated": (today or date.today()).isoformat(),
+            "repos": results,
+            "summary": {s: statuses.count(s) for s in
+                        ("ok", "problems", "no_manifest", "repo_missing",
+                         "config_error")},
+            "exit_code": code}
+
+
+def render_fleet(result):
+    _print(f"SSOT FLEET — {result['generated']}  "
+           f"({len(result['repos'])} repos)")
+    _print("")
+    for row in result["repos"]:
+        if row["status"] == "ok":
+            s = row["result"]["summary"]
+            _print(f"  ok        {row['repo']}: {s['facts_checked']} facts "
+                   "in sync")
+        elif row["status"] == "problems":
+            s = row["result"]["summary"]
+            n = s["problems"]
+            _print(f"  PROBLEMS  {row['repo']}: {n} "
+                   f"problem{'' if n == 1 else 's'} in "
+                   f"{s['facts_checked']} facts")
+        else:
+            label = {"no_manifest": "skipped", "repo_missing": "MISSING",
+                     "config_error": "ERROR"}[row["status"]]
+            _print(f"  {label:<9} {row['repo']}: {row['note']}")
+    for row in result["repos"]:
+        if row["status"] != "problems":
+            continue
+        _print("")
+        _print(f"== {row['repo']} ({row['root']})")
+        render_check(row["result"])
+    s = result["summary"]
+    _print("")
+    _print(f"{s['ok']} in sync, {s['problems']} with problems, "
+           f"{s['repo_missing']} missing, {s['config_error']} config errors, "
+           f"{s['no_manifest']} without a manifest.")
+
+
+def cmd_fleet(args):
+    entries = []
+    if args.fleet:
+        try:
+            entries += load_fleet_file(args.fleet)
+        except ManifestError as exc:
+            return _fail_config(str(exc))
+    entries += [{"path": p, "manifest": ".ssot.yaml"} for p in args.paths]
+    if not entries:
+        return _fail_config("fleet: give repo paths or --fleet FILE")
+    try:
+        overrides = _repo_overrides(args)
+    except ManifestError as exc:
+        return _fail_config(str(exc))
+    result = fleet(entries, fetch=args.fetch, repo_overrides=overrides)
+    if overrides:
+        declared = set()
+        for row in result["repos"]:
+            if "result" in row:
+                declared.update(row["result"].get("repos") or {})
+        unknown = sorted(n for n in overrides if n not in declared)
+        if unknown:
+            return _fail_config("--repo names a repo no manifest declares: " +
+                                ", ".join(unknown))
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        render_fleet(result)
+    return result["exit_code"]
+
+
 def cmd_discover(args):
     # The annotation text states that an occurrence is not covered by the
     # manifest, which is only established by the --untracked-only pass.
@@ -2300,6 +2449,18 @@ def build_parser():
     _add_fetch(e)
     _add_repo(e)
     e.set_defaults(func=cmd_explain)
+
+    fl = sub.add_parser("fleet", help="check several repos and report once")
+    fl.add_argument("paths", nargs="*", metavar="REPO",
+                    help="repo directories, each with a .ssot.yaml")
+    fl.add_argument("--fleet", metavar="FILE",
+                    help="YAML file with a 'repos:' list of paths (relative "
+                         "to the file) or {path, manifest} mappings")
+    fl.add_argument("--json", action="store_true",
+                    help="machine-readable output")
+    _add_fetch(fl)
+    _add_repo(fl)
+    fl.set_defaults(func=cmd_fleet)
     return p
 
 
@@ -2309,7 +2470,7 @@ def main(argv=None):
     # Default subcommand is `check`. Global options (--version, -h/--help) are
     # owned by the top-level parser and must not be swept into the default
     # subcommand — doing so routed `--version` to `check`, which rejected it.
-    known = {"check", "validate", "discover", "explain"}
+    known = {"check", "validate", "discover", "explain", "fleet"}
     global_opts = {"-h", "--help", "--version"}
     if argv and argv[0] in global_opts:
         pass
