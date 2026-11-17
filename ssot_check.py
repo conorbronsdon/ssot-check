@@ -275,8 +275,16 @@ def parse_manifest(text):
 def load_manifest(path):
     if not os.path.isfile(path):
         raise ManifestError(f"manifest not found: {path}")
-    with open(path, encoding="utf-8") as fh:
-        return parse_manifest(fh.read())
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except UnicodeDecodeError as exc:
+        raise ManifestError(f"manifest is not valid UTF-8: {exc.reason} "
+                            f"at byte {exc.start}") from None
+    except OSError as exc:
+        raise ManifestError(f"cannot read manifest: {exc.strerror or exc}") \
+            from None
+    return parse_manifest(text)
 
 
 # --------------------------------------------------------------------------- #
