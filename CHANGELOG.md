@@ -59,6 +59,11 @@ The project is no longer in maintenance mode; new features are being added.
 - **Copy globs don't follow a symlink out of the repo.** Such a match is a
   stale manifest entry. `fix` and `discover` skip it, and in-repo symlinks
   still work.
+- **`discover` no longer stalls on long digit/comma runs or long whitespace
+  runs.** A 20 KB `data-points="1,1,1,…"` attribute took about 30 s, and a unit
+  noun followed by 20 K spaces took about 2 s; both now finish in milliseconds.
+  A count now starts only at the head of a digit run, so a mid-token tail such
+  as the `000 users` in `a1,000 users` is no longer proposed (#25).
 
 ## [0.1.4] — 2026-11-16
 
