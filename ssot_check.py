@@ -279,6 +279,42 @@ def load_manifest(path):
 # --------------------------------------------------------------------------- #
 # Schema validation (stdlib re-implementation of schema/ssot.schema.json)
 # --------------------------------------------------------------------------- #
+def _non_string_values(manifest, line_of):
+    """Report a mapping or list where the manifest requires a string."""
+    errors = []
+
+    def need_str(node, key, where):
+        value = node.get(key)
+        if isinstance(value, (dict, list)):
+            ln = line_of(node, key)
+            msg = f"{where}.{key}: must be a string, not a nested block"
+            errors.append(f"line {ln}: {msg}" if ln else msg)
+
+    ignore = manifest.get("ignore_paths")
+    if isinstance(ignore, list) and not all(
+            isinstance(g, str) for g in ignore):
+        ln = line_of(manifest, "ignore_paths")
+        msg = "ignore_paths: every entry must be a glob string"
+        errors.append(f"line {ln}: {msg}" if ln else msg)
+
+    facts = manifest.get("facts")
+    for i, fact in enumerate(facts if isinstance(facts, list) else []):
+        if not isinstance(fact, dict):
+            continue
+        where = f"facts[{i}]"
+        need_str(fact, "name", where)
+        need_str(fact, "type", where)
+        locators = [("canonical", fact.get("canonical"))]
+        copies = fact.get("copies")
+        locators += [(f"copies[{j}]", cp) for j, cp in
+                     enumerate(copies if isinstance(copies, list) else [])]
+        for label, loc in locators:
+            if isinstance(loc, dict):
+                for key in ("file", "pattern", "rounding"):
+                    need_str(loc, key, f"{where}.{label}")
+    return errors
+
+
 def validate_manifest(manifest):
     """Return a list of human-readable error strings ([] means valid)."""
     errors = []
@@ -292,6 +328,13 @@ def validate_manifest(manifest):
 
     if not isinstance(manifest, dict):
         return ["top level must be a mapping"]
+
+    # The checks below (and check itself) treat these values as strings; a
+    # nested block in their place would raise TypeError instead of failing
+    # validation with exit 2.
+    shape_errors = _non_string_values(manifest, line_of)
+    if shape_errors:
+        return shape_errors
 
     ignore = manifest.get("ignore_paths")
     if ignore is not None and not isinstance(ignore, list):
