@@ -33,6 +33,9 @@ The project is no longer in maintenance mode; new features are being added.
   canonical and, with `max_gap_pct`, within that percentage of it. Floors may
   use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
   **DRIFTED (floor lagging)**.
+- Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
+  publishes the GitHub release from its changelog section
+  (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
 
 ## [0.1.4] — 2026-11-16
 

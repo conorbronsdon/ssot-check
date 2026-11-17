@@ -1,0 +1,120 @@
+name: release
+
+# Merging a version bump to main is the release. A push that changes the version
+# source (or the changelog) runs this workflow; a manual dispatch from main catches up
+# whatever a failed run left unpublished. Every decision lives in
+# scripts/release_meta.py and is unit-tested.
+#
+# Idempotent by version, never by run: the tag and the GitHub release are each
+# created only when missing, so a re-run finishes a half-done release and a merge
+# that doesn't bump the version publishes nothing. Tags are never moved.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ssot_check.py"
+      - "CHANGELOG.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize releases; never cancel one between its check and its write.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Read-only: proves the version, changelog and tests before anything is written.
+  preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python3 -m unittest discover tests
+      - name: Check every release-version copy agrees
+        run: python3 ssot_check.py check -f .ssot.yaml
+      - name: Plan the release
+        id: plan
+        run: python3 scripts/release_meta.py plan --tags "$(git tag -l 'v*')" --github-output "$GITHUB_OUTPUT"
+
+  release:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create the tag if it is missing
+        run: |
+          # Same shape as release_meta.VERSION_RE: whitespace around "=" and trailing
+          # whitespace are tolerated; the version's dots are literal.
+          SETS_VERSION="^__version__[[:space:]]*=[[:space:]]*\"${VERSION//./\\.}\"[[:space:]]*\$"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # Never move a tag, but never release a wrong one either: the tagged source
+            # must carry exactly this version.
+            if ! git show "$TAG:ssot_check.py" | grep -qE "$SETS_VERSION"; then
+              echo "::error::Tag $TAG exists but its ssot_check.py does not set __version__ = \"$VERSION\"; fix the tag by hand."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$TAG^{commit}" HEAD; then
+              echo "::error::Tag $TAG exists but is not on main; fix the tag by hand."
+              exit 1
+            fi
+            echo "Tag $TAG exists at $(git rev-list -n1 "$TAG") and carries $VERSION; not moving it."
+            exit 0
+          fi
+          # Tag main's own commit that introduced this version (first parent, so a merge
+          # commit rather than a branch commit), not whatever HEAD is now: a later catch-up
+          # dispatch tags the same source the merge would have.
+          # --diff-merges=first-parent: without it git log computes no diff for merge
+          # commits, so a bump that landed through a merge commit would never match.
+          TARGET="$(git log -1 --first-parent --diff-merges=first-parent --no-patch --format=%H -G"$SETS_VERSION" -- ssot_check.py)"
+          if [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$TARGET" HEAD; then
+            echo "::error::Could not find the commit on main that set __version__ = \"$VERSION\"."
+            exit 1
+          fi
+          # The tagged source must also carry this version's dated changelog section,
+          # or the release step could never publish its notes.
+          git show "$TARGET:CHANGELOG.md" > "$RUNNER_TEMP/target-CHANGELOG.md"
+          if ! python3 scripts/release_meta.py notes "$VERSION" --file "$RUNNER_TEMP/target-CHANGELOG.md" >/dev/null; then
+            echo "::error::Commit $TARGET sets $VERSION but has no dated changelog section for it; not tagging."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG" "$TARGET"
+          git push origin "refs/tags/$TAG"
+          echo "Tagged $TAG at $TARGET"
+      - name: Create the GitHub release if it is missing
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; nothing to do."
+            exit 0
+          fi
+          # Notes come from the tagged commit, so a catch-up after later main commits
+          # publishes the changelog as released.
+          git show "$TAG:CHANGELOG.md" > "$RUNNER_TEMP/tagged-CHANGELOG.md"
+          python3 scripts/release_meta.py notes "$VERSION" --file "$RUNNER_TEMP/tagged-CHANGELOG.md" --out "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          echo "Released $TAG (the Actions Marketplace listing follows the release)."
