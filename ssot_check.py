@@ -297,6 +297,10 @@ class _Parser:
 
 def parse_manifest(text):
     """Parse manifest text into nested LineDict/list/str. Raises ManifestError."""
+    # A UTF-8 byte order mark (written by some Windows editors) would
+    # otherwise become part of the first key.
+    if text.startswith("\ufeff"):
+        text = text[1:]
     parser = _Parser(text)
     result = parser.parse()
     if result is None:
