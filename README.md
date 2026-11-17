@@ -457,7 +457,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: conorbronsdon/ssot-check@v0.1.4
+      - uses: conorbronsdon/ssot-check@v0.2.0
         with:
           manifest: .ssot.yaml   # optional (default)
           discover: warn         # optional; off (default) or warn

@@ -27,7 +27,7 @@ import sys
 from datetime import date, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
