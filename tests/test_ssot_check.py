@@ -844,6 +844,21 @@ class SiblingGitConfigTests(unittest.TestCase):
             self.assertIn("; dirty working tree", copy["source"])
             self.assertNotIn("possibly", copy["source"])
 
+    def test_non_utf8_filename_in_sibling_is_labelled_not_crashed(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            try:
+                with open(os.path.join(os.fsencode(sib), b"caf\xe9.html"),
+                          "wb") as fh:
+                    fh.write(b"x\n")
+            except OSError:  # pragma: no cover - filesystem rejects it
+                self.skipTest("filesystem needs UTF-8 names")
+            git(sib, "checkout", "--quiet", "--", "page.html")
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertEqual(copy["value"], "49")
+            self.assertIn("; dirty working tree", copy["source"])
+
     def test_driver_name_with_whitespace_is_blanked_too(self):
         for name in ("pro be", "pro\u00a0be", "pro\tbe"):
             with self.subTest(name=repr(name)), \

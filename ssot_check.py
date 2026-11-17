@@ -1029,9 +1029,10 @@ def _git_safe_args(cwd):
 
 def _git(args, cwd):
     try:
+        # surrogateescape: `-z` output carries raw, possibly non-UTF-8 paths.
         out = subprocess.run(["git"] + _git_safe_args(cwd) + args, cwd=cwd,
                              capture_output=True, text=True, timeout=30,
-                             env=_git_env())
+                             errors="surrogateescape", env=_git_env())
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
