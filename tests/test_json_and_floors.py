@@ -297,5 +297,61 @@ class SchemaJsonPathTests(unittest.TestCase):
                 self.assertEqual(valid, ok)
 
 
+class FlowYamlTests(unittest.TestCase):
+    def parse(self, text):
+        return sc.parse_manifest(textwrap.dedent(text))
+
+    def test_flow_collections_are_rejected_with_line(self):
+        for text, needle, line in (
+                ("ignore_paths: [a, b]\nfacts:\n", "list [...]", 1),
+                ("facts:\n  - name: x\n    canonical: {file: a}\n",
+                 "mapping {...}", 3),
+                ("facts:\n  - {name: x}\n", "mapping {...}", 2)):
+            with self.subTest(text=text):
+                with self.assertRaises(sc.ManifestError) as ctx:
+                    self.parse(text)
+                self.assertIn(needle, str(ctx.exception))
+                self.assertEqual(ctx.exception.lineno, line)
+
+    def test_other_unsupported_forms_are_rejected(self):
+        for text, needle in (("a: &x 1\n", "anchors"),
+                             ("a: *x\n", "aliases"),
+                             ("a: !!str 1\n", "tags"),
+                             ("a: - 1\n", "own line"),
+                             ("a:\n  - *x\n", "aliases")):
+            with self.subTest(text=text):
+                with self.assertRaises(sc.ManifestError) as ctx:
+                    self.parse(text)
+                self.assertIn(needle, str(ctx.exception))
+        # Complement: the same characters quoted, or later in a value, parse.
+        m = self.parse("a: '*x'\nb: 'x & y'\nc: x - y\nd: '- 1'\n")
+        self.assertEqual((m["a"], m["b"], m["c"], m["d"]),
+                         ("*x", "x & y", "x - y", "- 1"))
+
+    def test_empty_flow_and_regex_lookalikes_still_parse(self):
+        m = self.parse("""\
+            a: []
+            b: {}
+            c: '[abc]'
+            d: [\\d,]+
+            e: "{x}"
+            """)
+        self.assertEqual(m["a"], [])
+        self.assertEqual(dict(m["b"]), {})
+        self.assertEqual(m["c"], "[abc]")
+        self.assertEqual(m["d"], "[\\d,]+")
+        self.assertEqual(m["e"], "{x}")
+
+    def test_validate_cli_reports_flow_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, ".ssot.yaml")
+            write(path, "ignore_paths: [a]\nfacts:\n")
+            err = io.StringIO()
+            with unittest.mock.patch("sys.stderr", err):
+                self.assertEqual(sc.main(["validate", "-f", path]), 2)
+            self.assertIn("line 1", err.getvalue())
+            self.assertIn("one '- item' per line", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

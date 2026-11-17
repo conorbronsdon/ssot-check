@@ -1,0 +1,25 @@
+# pre-commit hooks for ssot-check (https://pre-commit.com).
+# In a repository with a .ssot.yaml, add to .pre-commit-config.yaml:
+#
+#   - repo: https://github.com/conorbronsdon/ssot-check
+#     rev: v0.2.0
+#     hooks:
+#       - id: ssot-check
+#
+# The hooks are stdlib Python with no install step. They read files only.
+- id: ssot-check
+  name: ssot-check (copied-fact drift)
+  description: Verify every copy in .ssot.yaml against its canonical value.
+  entry: ssot_check.py check
+  language: script
+  # Drift can come from any file, so run on every commit, not only when the
+  # manifest changes.
+  pass_filenames: false
+  always_run: true
+- id: ssot-check-validate
+  name: ssot-check validate (manifest structure)
+  description: Validate .ssot.yaml against the documented schema.
+  entry: ssot_check.py validate
+  language: script
+  pass_filenames: false
+  files: '(^|/)\.ssot\.ya?ml$'

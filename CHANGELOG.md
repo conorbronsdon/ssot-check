@@ -36,6 +36,19 @@ The project is no longer in maintenance mode; new features are being added.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
+- **pre-commit hooks.** `.pre-commit-hooks.yaml` defines `ssot-check` (runs
+  `check` on every commit) and `ssot-check-validate` (runs `validate` when
+  `.ssot.yaml` changes). Both run the stdlib script; nothing is installed.
+
+### Changed
+
+- **The manifest parser rejects YAML it cannot read correctly.** Unquoted
+  flow collections (`{a: 1}`, `[a, b]`), anchors and aliases (`&x`, `*x`),
+  tags (`!!str`) and a sequence item on its key's line used to be read as
+  plain strings, which silently changed their meaning. They now fail with
+  the line number and the fix. An unquoted regex that is entirely
+  bracketed, such as `[abc]`, must now be quoted, as in real YAML. The empty
+  forms `[]` and `{}` now parse as an empty list and mapping.
 
 ## [0.1.4] — 2026-11-16
 
