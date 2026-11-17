@@ -308,6 +308,13 @@ def _non_string_values(manifest, line_of):
         msg = "ignore_paths: every entry must be a glob string"
         errors.append(f"line {ln}: {msg}" if ln else msg)
 
+    need_str(manifest, "guard_skip_marker", "manifest")
+    repos = manifest.get("repos")
+    if isinstance(repos, dict):
+        for rname, rdef in repos.items():
+            if isinstance(rdef, dict):
+                need_str(rdef, "path", f"repos.{rname}")
+
     facts = manifest.get("facts")
     for i, fact in enumerate(facts if isinstance(facts, list) else []):
         if not isinstance(fact, dict):
@@ -321,7 +328,8 @@ def _non_string_values(manifest, line_of):
                      enumerate(copies if isinstance(copies, list) else [])]
         for label, loc in locators:
             if isinstance(loc, dict):
-                for key in ("file", "pattern", "rounding"):
+                for key in ("file", "pattern", "rounding", "repo", "json",
+                            "relation"):
                     need_str(loc, key, f"{where}.{label}")
     return errors
 
