@@ -311,10 +311,11 @@ facts:
 
 A value is matched as a whole number: `77K` does not match `177K`, `1,152`
 does not match `1,152.5` or `11,152`, but `$1,152` and `1,152.` (sentence end)
-do. A value that starts or ends with a letter matches as a whole word: `11K`
-does not match `11Kbps`. Guards scan tracked files under the root only (all
-files when it is not inside a git work tree, or nothing under it is tracked),
-and never the manifest or the canonical file itself: the
+do. A letter at the start or end of a value cannot run into a neighbouring
+letter on that side: `11K` does not match `11Kbps`, and `v2` does not match
+`nv2`. Guards scan tracked files under the root only (all files when the root
+is not inside a git work tree, or is a subdirectory with nothing tracked), and
+never the manifest or the canonical file itself: the
 canonical is policed by its own pattern, and owners often record history. Other repos run their own
 manifest: a check fires where the drift is created.
 
