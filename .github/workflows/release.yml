@@ -67,10 +67,13 @@ jobs:
           fetch-depth: 0
       - name: Create the tag if it is missing
         run: |
+          # Same shape as release_meta.VERSION_RE: whitespace around "=" and trailing
+          # whitespace are tolerated; the version's dots are literal.
+          SETS_VERSION="^__version__[[:space:]]*=[[:space:]]*\"${VERSION//./\\.}\"[[:space:]]*\$"
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             # Never move a tag, but never release a wrong one either: the tagged source
             # must carry exactly this version.
-            if ! git show "$TAG:ssot_check.py" | grep -qx "__version__ = \"$VERSION\""; then
+            if ! git show "$TAG:ssot_check.py" | grep -qE "$SETS_VERSION"; then
               echo "::error::Tag $TAG exists but its ssot_check.py does not set __version__ = \"$VERSION\"; fix the tag by hand."
               exit 1
             fi
@@ -84,7 +87,9 @@ jobs:
           # Tag main's own commit that introduced this version (first parent, so a merge
           # commit rather than a branch commit), not whatever HEAD is now: a later catch-up
           # dispatch tags the same source the merge would have.
-          TARGET="$(git log -1 --first-parent --format=%H -S"__version__ = \"$VERSION\"" -- ssot_check.py)"
+          # --diff-merges=first-parent: without it git log computes no diff for merge
+          # commits, so a bump that landed through a merge commit would never match.
+          TARGET="$(git log -1 --first-parent --diff-merges=first-parent --no-patch --format=%H -G"$SETS_VERSION" -- ssot_check.py)"
           if [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$TARGET" HEAD; then
             echo "::error::Could not find the commit on main that set __version__ = \"$VERSION\"."
             exit 1
