@@ -53,13 +53,17 @@ def _rand_plain(rng):
         s = s.rstrip()
         if ": " in s or s.endswith(":") or " #" in s:
             continue
+        # An apostrophe right after a letter ("it's") is plain text (#40).
+        spots = [k for k in range(1, len(s)) if s[k - 1].isalnum()]
+        if spots and rng.random() < 0.3:
+            k = rng.choice(spots)
+            s = s[:k] + "'" + s[k:]
         return s
 
 
-# Excluded until claude/fix-strip-comment-quotes lands: _strip_comment treats
-# an apostrophe inside a plain scalar (or an escaped \" inside a double-quoted
-# one) as a quote boundary, so a trailing comment is kept or the value is cut.
-# Plain values here carry no quotes, and double-quoted values no '"' or '\'.
+# Plain values may hold an apostrophe after a letter, and double-quoted values
+# an escaped \" or \\ (both fixed in #40, which taught _strip_comment where a
+# quoted scalar can start and how escapes work inside one).
 def _scalar_value(rng):
     """Return (value, yaml_text) for a single-line scalar."""
     kind = rng.random()
@@ -67,8 +71,8 @@ def _scalar_value(rng):
         v = _rand_text(rng, QUOTED_CHARS)
         return v, "'" + v.replace("'", "''") + "'"
     if kind < 0.65:
-        v = _rand_text(rng, QUOTED_CHARS.replace('"', "").replace("\\", ""))
-        return v, '"' + v + '"'
+        v = _rand_text(rng, QUOTED_CHARS)
+        return v, '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
     v = _rand_plain(rng)
     return v, v
 
@@ -335,8 +339,39 @@ class ManifestFuzzProperties(unittest.TestCase):
                 text = "\ufeff" + text
             self.assert_clean(text, f"seed={SEED + 5} example={i}\n{text}")
 
-    # Tab indentation is not covered here: _cur's tab check never fires, so a
-    # tab-indented line parses at the wrong level (claude/fix-tab-indentation).
+    def test_tab_in_leading_indentation_is_always_rejected(self):
+        # The documented tab check (fixed in #39): a tab anywhere in a line's
+        # leading whitespace is a ManifestError naming that line.
+        rng = random.Random(SEED + 6)
+        for i in range(300):
+            lines = _serialize(rng, _gen_map(rng, 0)).rstrip("\n").split("\n")
+            j = rng.randrange(len(lines))
+            if not lines[j].strip() or lines[j].lstrip().startswith("#"):
+                continue
+            lead = len(lines[j]) - len(lines[j].lstrip(" "))
+            k = rng.randint(0, lead)
+            lines[j] = lines[j][:k] + "\t" + lines[j][k:]
+            text = "\n".join(lines) + "\n"
+            ctx = f"seed={SEED + 6} example={i}\n{text}"
+            try:
+                sc.parse_manifest(text)
+            except sc.ManifestError as exc:
+                if "tab in indentation" in str(exc):
+                    self.assertEqual(exc.lineno, j + 1, ctx)
+                continue
+            # Only a line inside a literal or folded block may keep a tab.
+            in_block = any(l.rstrip().endswith((": |", ": >", "- |", "- >"))
+                           for l in lines[:j])
+            self.assertTrue(in_block, ctx)
+
+    def test_byte_order_mark_parses_like_no_mark(self):
+        # A manifest saved with a UTF-8 BOM reads the same (fixed in #38).
+        rng = random.Random(SEED + 7)
+        for i in range(300):
+            tree = _gen_map(rng, 0)
+            text = _serialize(rng, tree)
+            self.assertEqual(sc.parse_manifest("\ufeff" + text),
+                             _expected(("map", tree)), f"seed={SEED + 7} example={i}\n{text}")
 
 
 # --------------------------------------------------------------------------- #
