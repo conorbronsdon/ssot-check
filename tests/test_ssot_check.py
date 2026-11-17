@@ -553,7 +553,8 @@ class CrossRepoFetchTests(unittest.TestCase):
     def test_default_read_does_not_rewrite_sibling_index(self):
         """Labelling the checkout runs `git status`, which by default
         refreshes stale stat data and rewrites .git/index (taking
-        index.lock). The default path must leave the sibling untouched."""
+        index.lock). The default path must not rewrite the sibling's
+        .git/index. (fsmonitor and untracked-cache state are out of scope.)"""
         with tempfile.TemporaryDirectory() as parent:
             repo, sib = self._fixture(parent)
             # A tracked file whose content is unchanged but whose stat data
@@ -576,6 +577,16 @@ class CrossRepoFetchTests(unittest.TestCase):
                 self.assertEqual(fh.read(), before,
                                  "sibling .git/index rewritten without --fetch")
             self.assertEqual(os.stat(index).st_mtime_ns, before_mtime)
+
+            # Negative control: plain `git status` on the same fixture does
+            # rewrite the index, so the assertions above are live here (a
+            # filesystem that hid the stale stat data would fail this, not
+            # pass vacuously).
+            git(sib, "status", "--porcelain")
+            with open(index, "rb") as fh:
+                self.assertNotEqual(fh.read(), before,
+                                    "fixture is not stale: plain status "
+                                    "left .git/index unchanged")
 
     def test_fetch_runs_only_fetch_and_reads(self):
         """Must-still-fire: --fetch does fetch, and the write surface stops
