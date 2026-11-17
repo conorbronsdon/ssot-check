@@ -50,6 +50,15 @@ The project is no longer in maintenance mode; new features are being added.
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
 
+### Fixed
+
+- **Cross-repo reads ignore the sibling repo's config-driven commands.** git
+  runs with the system config off, fsmonitor, hooks and automatic maintenance
+  disabled, and the repo's filter and diff drivers blanked.
+- **Copy globs don't follow a symlink out of the repo.** Such a match is a
+  stale manifest entry. `fix` and `discover` skip it, and in-repo symlinks
+  still work.
+
 ## [0.1.4] — 2026-11-16
 
 ### Fixed

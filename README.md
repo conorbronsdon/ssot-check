@@ -268,6 +268,9 @@ A local copy `file` may be a glob (`docs/guides/*.md`); every matching file is
 checked with the same pattern. Files matching `ignore_paths` are excluded.
 A glob that matches no file (after exclusions) is reported as a stale manifest
 entry, not skipped. Globbing is not applied to cross-repo paths.
+A match that a symlink resolves outside the repo root is not read: it is
+reported as a stale manifest entry, and `fix` and `discover` skip it. Symlinks
+that stay inside the repo work as before.
 
 ### Guards: superseded and restated values
 
@@ -380,6 +383,11 @@ the checkout's branch and short SHA, and prints a warning when it is on a
 non-default branch or has uncommitted changes. This prevents a parked feature
 branch from masquerading as the state of the repository.
 
+The sibling's own git configuration is not trusted. Every git command
+ssot-check runs ignores the system config, turns off fsmonitor, hooks and
+automatic maintenance, and blanks any filter or diff driver the repo defines, so
+the repo's config cannot make a read run a command.
+
 **With `--fetch`**, and if the sibling is a git repo, `ssot-check` runs
 `git fetch` there and compares against its remote-tracking ref
 (`branch@{upstream}`, else `origin/HEAD`) via `git show`. Be clear about the
@@ -396,6 +404,9 @@ The report labels each cross-repo value with its ref and tip date — e.g.
 remote), the value still comes from whatever refs were on disk and is labelled
 `fetch failed; local mirror may be stale`, so a stale mirror can't pass as a
 fresh one.
+The fetch uses the sibling's remote and transport settings (URL, ssh command,
+credential helper, proxy), so only use `--fetch` on repos whose config you
+trust.
 
 Local divergence between the sibling's working tree and its remote-tracking ref
 is reported, not fixed. If the value can't be established — the file is
