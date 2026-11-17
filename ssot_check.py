@@ -801,7 +801,10 @@ def extract_json(content, path):
     """Return (value, line, error). The line is approximate: where the last
     named key first appears."""
     try:
-        node = json.loads(content)
+        # json.loads rejects a leading UTF-8 byte order mark, which some
+        # Windows tools write. Dropping it keeps line numbers unchanged.
+        node = json.loads(content[1:] if content.startswith("\ufeff")
+                          else content)
     except ValueError as exc:
         return None, None, f"not valid JSON ({exc.__class__.__name__})"
     segs = parse_json_path(path)
