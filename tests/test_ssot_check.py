@@ -1045,6 +1045,20 @@ class CLIExitCodeTests(unittest.TestCase):
             r = self._run(["validate"], tmp)
             self.assertEqual(r.returncode, 2)
 
+    def test_undecodable_manifest_is_a_config_error(self):
+        # A manifest that is not UTF-8 is unparseable: exit 2 with a message,
+        # not a traceback whose exit 1 reads as "drift found".
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, ".ssot.yaml"), "wb") as fh:
+                fh.write(b"facts:\n  - name: caf\xe9\n")
+            for argv in (["check"], ["validate"], ["explain", "x"],
+                         ["discover", "--manifest", ".ssot.yaml"]):
+                with self.subTest(argv=argv):
+                    r = self._run(argv, tmp)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertNotIn("Traceback", r.stderr)
+                    self.assertIn(".ssot.yaml", r.stderr)
+
     def test_untracked_discovery_requires_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             write(os.path.join(tmp, "README.md"), "Costs $49.\n")

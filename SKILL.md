@@ -74,6 +74,19 @@ absolute paths. Use the requested manifest path if it differs from `.ssot.yaml`.
 4. Draft a fact with `name`, `canonical` (`file`, one-capture-group `pattern`),
    `copies`, `type`, and a useful `note`. See the [manifest reference](README.md)
    and [example](.ssot.example.yaml). Explain any intentional rounding.
+   - A copy in another repo uses `repo: NAME` (declared under top-level
+     `repos:`) rather than a `../NAME/...` path, so the manifest works wherever
+     the repos are cloned.
+   - When a value should live in one place and other files should point to it,
+     or when an old value keeps resurfacing, add a `guard`: `anchors`, the
+     `superseded` values, and `restated: true` if every undeclared mention of
+     the current value is a defect. Anchors must be words that appear on the
+     same line as the value; choose them from the real occurrences.
+   - For a value in a JSON file, use `json: key.path` (a final `#` is a
+     length) instead of a regex.
+   - A rounded-down marketing figure ("80+ episodes") is a copy with
+     `relation: floor` and a `max_gap_pct`, not an excluded fact. Rounding a
+     script applies is `rounding`, not `floor`.
 5. Apply the authorization rule above, then validate and check the manifest.
 
 ## Check and explain
@@ -101,6 +114,16 @@ Interpret the result before editing:
   or the extraction rule became stale. Repair the locator, not a guessed value.
 - **STALE CANONICAL:** report the freshness threshold and owner; a date alone
   does not establish that the fact is wrong.
+- **REPO NOT FOUND:** a named repo is not checked out where the run looked; the
+  report lists each location. Say which facts went unchecked. Do not clone or
+  re-point a repo to make the check pass unless the user asked for that.
+- **STALE VALUE:** a superseded value is still asserted. Before editing, confirm
+  the file is not a dated record whose old value is correct history; if it is,
+  propose an `exempt` entry or the manifest's `guard_skip_marker` instead.
+- **RESTATED:** the current value appears outside the canonical and declared
+  copies. Either replace it with a pointer to the owner, or, if the copy must
+  carry the literal value (published copy, a pitch), declare it under `copies`
+  so it is compared from then on. Do not do both.
 - **UNVERIFIED:** state what could not be read or established. A failed fetch
   can leave stale refs on disk. Do not silently treat them as fresh evidence.
 
