@@ -89,6 +89,12 @@
       "type": "object",
       "required": ["anchors"],
       "additionalProperties": false,
+      "anyOf": [
+        { "required": ["superseded"], "properties": { "superseded": { "minItems": 1 } } },
+        { "required": ["restated"], "properties": { "restated": { "const": true } } }
+      ],
+      "if": { "required": ["also_current"], "properties": { "also_current": { "minItems": 1 } } },
+      "then": { "required": ["restated"], "properties": { "restated": { "const": true } } },
       "description": "Scan this repo's prose for the fact's value on the same line as an anchor word. STALE VALUE: a superseded value appears. RESTATED (restated: true): the current value appears outside the canonical and declared copies.",
       "properties": {
         "anchors": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Whole words, case-insensitive. A value is only reported on a line that also contains one." },

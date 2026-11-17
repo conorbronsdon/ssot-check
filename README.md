@@ -311,8 +311,10 @@ facts:
 
 A value is matched as a whole number: `77K` does not match `177K`, `1,152`
 does not match `1,152.5` or `11,152`, but `$1,152` and `1,152.` (sentence end)
-do. Guards scan tracked files in the manifest's repo only (all files when it is
-not a git repo), and never the manifest or the canonical file itself: the
+do. A value that starts or ends with a letter matches as a whole word: `11K`
+does not match `11Kbps`. Guards scan tracked files under the root only (all
+files when it is not inside a git work tree, or nothing under it is tracked),
+and never the manifest or the canonical file itself: the
 canonical is policed by its own pattern, and owners often record history. Other repos run their own
 manifest: a check fires where the drift is created.
 
@@ -346,13 +348,15 @@ Each run resolves a name in this order, and the first match wins:
 4. the manifest's `path`, default `../<name>`
 
 Options 1 and 2 are explicit and never fall back: a typo there reports
-**REPO NOT FOUND** rather than quietly reading another checkout. A repo found
+**REPO NOT FOUND** rather than quietly reading another checkout, and a
+`--repo` name the manifest does not declare is a configuration error (exit
+`2`). A repo found
 nowhere is reported **REPO NOT FOUND** with every location tried, so a missing
 clone is never mistaken for a reworded canonical. Set `SSOT_REPOS_DIR` once per
 machine (for example to `~/` or `~/code`) and every manifest resolves.
 Everything in the next section applies to named repos too: they are read-only,
-and `--fetch` is the only write. Globs and `..` are not allowed in a named
-repo's `file`.
+and `--fetch` is the only write. Globs, `..` and absolute paths (POSIX or
+Windows form, on any OS) are not allowed in a named repo's `file`.
 
 ### Cross-repo copies (never edited; `--fetch` is the one write)
 

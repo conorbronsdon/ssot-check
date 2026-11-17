@@ -258,7 +258,7 @@ class GuardTests(unittest.TestCase):
             self.assertIn("STALE VALUE (1)", out)
             self.assertIn("RESTATED (1)", out)
             self.assertIn("plan.md:1", out)
-            self.assertIn("1 stale values, 1 restated", out)
+            self.assertIn("1 stale value, 1 restated", out)
             json.dumps(r)
 
 
@@ -430,10 +430,12 @@ class NamedRepoTests(unittest.TestCase):
         errs = sc.validate_manifest(sc.parse_manifest(
             textwrap.dedent(bad_undeclared)))
         self.assertTrue(any("not declared" in e for e in errs), errs)
-        for bad in ("../x.ts", "/abs/x.ts", "src/*.ts"):
+        for bad, msg in (("../x.ts", "must be a path inside that repo"),
+                         ("/abs/x.ts", "must be a path inside that repo"),
+                         ("src/*.ts", "globs are not supported")):
             errs = sc.validate_manifest(sc.parse_manifest(textwrap.dedent(
                 NAMED.replace("file: src/consts.ts", f"file: {bad}"))))
-            self.assertTrue(errs, bad)
+            self.assertTrue(any(msg in e for e in errs), (bad, errs))
 
     def test_cli_repo_flag(self):
         with tempfile.TemporaryDirectory() as parent:
@@ -451,6 +453,241 @@ class NamedRepoTests(unittest.TestCase):
                 with unittest.mock.patch("sys.stderr", io.StringIO()):
                     self.assertEqual(sc.main(["check", "-f", mpath,
                                               "--repo", "site"]), 2)
+
+
+
+class _GuardHelpers:
+    """GuardTests' helpers without re-running GuardTests' own tests."""
+    run_check = GuardTests.run_check
+    findings = GuardTests.findings
+    setup_owner = GuardTests.setup_owner
+
+
+class PortableRepoPathTests(unittest.TestCase):
+    """A `repo:` locator's file is portable manifest input: it is rejected
+    when absolute in POSIX or Windows form on every host OS (Python 3.13 on
+    Windows no longer treats '/x' as absolute; POSIX never treats 'C:/x' so)."""
+
+    MSG = "must be a path inside that repo"
+
+    def errors_for(self, file_value, repo=True):
+        m = sc.parse_manifest(textwrap.dedent(NAMED))
+        cp = m["facts"][0]["copies"][0]
+        cp["file"] = file_value
+        if not repo:
+            del cp["repo"]
+        return sc.validate_manifest(m)
+
+    def test_absolute_in_any_os_form_is_rejected(self):
+        for bad in ("/abs/x.ts", "\\abs\\x.ts", "C:/abs/x.ts",
+                    "C:\\abs\\x.ts", "c:x.ts", "//srv/share/x.ts",
+                    "\\\\srv\\share\\x.ts", "../x.ts", "a/../../x.ts",
+                    "a\\..\\x.ts"):
+            with self.subTest(bad=bad):
+                errs = self.errors_for(bad)
+                self.assertTrue(any(self.MSG in e for e in errs), errs)
+
+    def test_relative_paths_inside_the_repo_still_validate(self):
+        for good in ("src/consts.ts", "a.b/c.ts", "..foo/x.ts",
+                     "deep/dir/x.md", "ab:c.ts"):
+            with self.subTest(good=good):
+                self.assertEqual(self.errors_for(good), [])
+
+    def test_absolute_path_without_repo_is_still_allowed(self):
+        # The check is scoped to `repo:` locators; a plain cross-repo
+        # absolute path keeps validating as before.
+        self.assertEqual(self.errors_for("/abs/x.ts", repo=False), [])
+
+
+class LetterBoundaryTests(_GuardHelpers, unittest.TestCase):
+    """A value ending (or starting) in a letter must not match inside a longer
+    word, and must still match at every ordinary boundary."""
+
+    def assert_cases(self, m, cases, kind="stale_value"):
+        for text, fires in cases:
+            with self.subTest(text=text), \
+                    tempfile.TemporaryDirectory() as tmp:
+                self.setup_owner(tmp)
+                write(os.path.join(tmp, "x.md"), text + "\n")
+                r = self.run_check(tmp, m)
+                self.assertEqual(bool(self.findings(r, kind)), fires)
+
+    def test_letter_suffix_value(self):
+        self.assert_cases(manifest(GUARDED.replace('"1,152"', '"11K"')), [
+            ("UI throughput 11Kbps", False),
+            ("UI 211K total", False),
+            ("UI was 11K", True),
+            ("UI was 11K.", True),
+            ("UI was 11K, then", True),
+            ("UI was $11K", True),
+            ("UI (11K)", True),
+        ])
+
+    def test_letter_prefix_value(self):
+        self.assert_cases(manifest(GUARDED.replace('"1,152"', '"v2"')), [
+            ("UI nv2 plan", False),
+            ("UI v20", False),
+            ("UI v2.", True),
+            ("UI (v2)", True),
+        ])
+
+    def test_also_current_alias_respects_letter_boundary(self):
+        self.assert_cases(manifest(GUARDED), [
+            ("UI 31Kb buffer", False),
+            ("UI 31K total", True),
+        ], kind="restated")
+
+
+def _git(cwd, *args):
+    import subprocess
+    proc = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True,
+                          text=True)
+    if proc.returncode != 0:
+        raise AssertionError(f"git {args} failed: {proc.stderr}")
+    return proc.stdout
+
+
+def _has_git():
+    import shutil
+    return shutil.which("git") is not None
+
+
+@unittest.skipUnless(_has_git(), "git not available")
+class GuardRepoFilesTests(_GuardHelpers, unittest.TestCase):
+    """Guards scan tracked files even when root is a subdirectory of the
+    work tree (README: 'tracked files in the manifest's repo')."""
+
+    def test_subdirectory_root_scans_tracked_files_only(self):
+        with tempfile.TemporaryDirectory() as top:
+            _git(top, "init", "-q")
+            root = os.path.join(top, "docs")
+            self.setup_owner(root)
+            write(os.path.join(root, "tracked.md"), "UI $1,152\n")
+            write(os.path.join(root, "out", "built.md"), "UI $1,152\n")
+            write(os.path.join(top, ".gitignore"), "docs/out/\n")
+            _git(top, "add", ".gitignore", "docs/owner.md", "docs/tracked.md")
+            r = self.run_check(root, manifest(GUARDED))
+            files = sorted(g["file"] for g in self.findings(r, "stale_value"))
+            # must fire on the tracked file, must not on ignored build output
+            self.assertEqual(files, ["tracked.md"])
+
+    def test_untracked_folder_inside_a_repo_is_walked(self):
+        with tempfile.TemporaryDirectory() as top:
+            _git(top, "init", "-q")
+            write(os.path.join(top, "README.md"), "x\n")
+            _git(top, "add", "README.md")
+            root = os.path.join(top, "scratch")
+            self.setup_owner(root)
+            write(os.path.join(root, "a.md"), "UI $1,152\n")
+            r = self.run_check(root, manifest(GUARDED))
+            files = [g["file"] for g in self.findings(r, "stale_value")]
+            self.assertEqual(files, ["a.md"])
+
+
+class ManifestPathTests(_GuardHelpers, unittest.TestCase):
+    def test_manifest_on_another_drive_does_not_crash(self):
+        # os.path.relpath raises ValueError across Windows drives; simulate
+        # it on any OS for the manifest path only.
+        real = os.path.relpath
+        fake_manifest = os.path.abspath(os.path.join("elsewhere", "m.yaml"))
+
+        def relpath(path, start=os.curdir):
+            if path == fake_manifest:
+                raise ValueError("path is on mount 'Z:', start on mount 'C:'")
+            return real(path, start)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.setup_owner(tmp)
+            write(os.path.join(tmp, "x.md"), "UI $1,152\n")
+            with unittest.mock.patch("os.path.relpath", relpath):
+                r = self.run_check(tmp, manifest(GUARDED),
+                                   manifest_path=fake_manifest)
+            self.assertEqual(len(self.findings(r, "stale_value")), 1)
+
+
+class RepoOverrideNameTests(unittest.TestCase):
+    """--repo for a name the manifest does not declare is a config error,
+    not a silent no-op; a declared name still works."""
+
+    def test_undeclared_override_name_is_rejected(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = NamedRepoTests.layout(None, parent)
+            mpath = os.path.join(root, ".ssot.yaml")
+            write(mpath, textwrap.dedent(NAMED))
+            site = os.path.join(parent, "site")
+            for argv in (["check", "-f", mpath],
+                         ["explain", "-f", mpath, "price"]):
+                with self.subTest(cmd=argv[0]):
+                    err = io.StringIO()
+                    with unittest.mock.patch("sys.stdout", io.StringIO()), \
+                            unittest.mock.patch("sys.stderr", err):
+                        self.assertEqual(
+                            sc.main(argv + ["--repo", "sit=" + site]), 2)
+                    self.assertIn("does not declare: 'sit'", err.getvalue())
+                    with unittest.mock.patch("sys.stdout", io.StringIO()):
+                        self.assertEqual(
+                            sc.main(argv + ["--repo", "site=" + site]), 0)
+
+
+class SummaryWordingTests(_GuardHelpers, unittest.TestCase):
+    def test_stale_value_count_is_pluralized(self):
+        m = manifest(GUARDED.replace("          restated: true\n", "")
+                     .replace("          also_current:\n"
+                              "            - \"31K\"\n", ""))
+        for lines, want in (("UI $1,152\n", "1 stale value."),
+                            ("UI $1,152\nUI was 1,152\n", "2 stale values.")):
+            with self.subTest(want=want), \
+                    tempfile.TemporaryDirectory() as tmp:
+                self.setup_owner(tmp)
+                write(os.path.join(tmp, "plan.md"), lines)
+                r = self.run_check(tmp, m)
+                buf = io.StringIO()
+                with unittest.mock.patch("sys.stdout", buf):
+                    sc.render_check(r)
+                self.assertIn(want, buf.getvalue())
+
+
+try:
+    import jsonschema
+except ImportError:  # pragma: no cover - optional; the tool is stdlib-only
+    jsonschema = None
+
+
+@unittest.skipUnless(jsonschema, "jsonschema not installed")
+class SchemaGuardRulesTests(unittest.TestCase):
+    """The JSON Schema enforces the same guard rules as `validate`."""
+
+    def setUp(self):
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "schema", "ssot.schema.json"),
+                  encoding="utf-8") as fh:
+            self.schema = json.load(fh)
+
+    def valid(self, guard):
+        doc = {"facts": [{"name": "ui-cap",
+                          "canonical": {"file": "o.md", "pattern": "(x)"},
+                          "guard": guard}]}
+        try:
+            jsonschema.validate(doc, self.schema)
+            return True
+        except jsonschema.ValidationError:
+            return False
+
+    def test_guard_rules(self):
+        cases = [
+            ({"anchors": ["UI"], "superseded": ["1"]}, True),
+            ({"anchors": ["UI"], "restated": True}, True),
+            ({"anchors": ["UI"], "restated": True, "also_current": ["31K"]},
+             True),
+            ({"anchors": ["UI"]}, False),
+            ({"anchors": ["UI"], "superseded": []}, False),
+            ({"anchors": ["UI"], "restated": False}, False),
+            ({"anchors": ["UI"], "superseded": ["1"],
+              "also_current": ["31K"]}, False),
+        ]
+        for guard, ok in cases:
+            with self.subTest(guard=guard):
+                self.assertEqual(self.valid(guard), ok)
 
 
 if __name__ == "__main__":

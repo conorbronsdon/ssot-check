@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 from datetime import date, datetime
+from pathlib import PurePosixPath, PureWindowsPath
 
 __version__ = "0.1.3"
 
@@ -466,6 +467,18 @@ def _check_guard(guard, name, errors, line_of):
             guard, "also_current")
 
 
+def _is_absolute_any_os(path):
+    """True if a manifest path is absolute or drive-anchored on ANY OS.
+
+    Manifest paths are portable input, so this must not depend on the host:
+    os.path.isabs('/x') is False on Windows from Python 3.13, and
+    os.path.isabs('C:/x') is False on POSIX. 'C:x' (drive-relative) and
+    '\\\\server\\share' are rejected too.
+    """
+    return (PurePosixPath(path).is_absolute() or
+            bool(PureWindowsPath(path).anchor))
+
+
 def _check_locator(loc, where, errors, line_of, repo_names=()):
     """Validate a {file, pattern[, repo]} block."""
     def err(msg, key):
@@ -478,7 +491,7 @@ def _check_locator(loc, where, errors, line_of, repo_names=()):
             err(f"{where}: repo {repo!r} is not declared under top-level "
                 "'repos'", "repo")
         f = str(loc.get("file") or "")
-        if os.path.isabs(f) or ".." in f.replace("\\", "/").split("/"):
+        if _is_absolute_any_os(f) or ".." in f.replace("\\", "/").split("/"):
             err(f"{where}: with 'repo', 'file' must be a path inside that "
                 "repo (no absolute path, no '..')", "file")
         elif any(ch in f for ch in "*?["):
@@ -1019,10 +1032,17 @@ def value_regex(value):
 
     '77K' must not match '177K'; '9/19' must not match '19/19'. A leading '$'
     must not block a match, and a trailing '.' or ',' ends a sentence rather
-    than continuing the number — only '.<digit>' or ',<digit>' does.
+    than continuing the number — only '.<digit>' or ',<digit>' does. A value
+    that starts or ends with a letter ('11K') must not match inside a longer
+    word either ('11Kbps').
     """
-    return re.compile(r"(?<![\d,/.])" + re.escape(value) +
-                      r"(?![\d/]|[,.]\d)", re.IGNORECASE)
+    lead = r"(?<![\d,/.])"
+    trail = r"(?![\d/]|[,.]\d)"
+    if value[:1].isalpha():
+        lead = r"(?<![\d,/.A-Za-z])"
+    if value[-1:].isalpha():
+        trail = r"(?![\d/A-Za-z]|[,.]\d)"
+    return re.compile(lead + re.escape(value) + trail, re.IGNORECASE)
 
 
 def _anchor_regexes(anchors):
@@ -1043,12 +1063,21 @@ def _path_glob(rel, pattern):
 
 
 def _repo_files(root):
-    """Tracked files when root is a git work tree, else a filtered walk."""
+    """Tracked files when root is in a git work tree, else a filtered walk.
+
+    Run from a subdirectory of a work tree (a manifest that is not at the
+    repo top, or --root pointing inside one), `git ls-files` lists only the
+    tracked files under it, relative to it, so ignored build output is still
+    skipped. A root with nothing tracked (an untracked or ignored folder inside
+    another repo) falls back to the walk rather than scanning nothing.
+    """
     out = _git(["ls-files", "-z"], root)
     top = _git(["rev-parse", "--show-toplevel"], root)
-    if out is not None and top and \
-            os.path.realpath(top.strip()) == os.path.realpath(root):
-        return [p for p in out.split("\0") if p]
+    if out is not None and top:
+        tracked = [p for p in out.split("\0") if p]
+        if tracked or \
+                os.path.realpath(top.strip()) == os.path.realpath(root):
+            return tracked
     files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in DISCOVER_SKIP_DIRS]
@@ -1118,9 +1147,14 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
     skip_marker = manifest.get("guard_skip_marker")
     manifest_rel = None
     if manifest_path:
-        manifest_rel = os.path.relpath(os.path.abspath(manifest_path),
-                                       os.path.abspath(root)).replace(
-                                           os.sep, "/")
+        try:
+            manifest_rel = os.path.relpath(os.path.abspath(manifest_path),
+                                           os.path.abspath(root)).replace(
+                                               os.sep, "/")
+        except ValueError:
+            # Different Windows drives: the manifest cannot be inside root,
+            # so it is never among the files a guard scans.
+            manifest_rel = None
     files_cache = []
     fact_results = []
     counts = {"in_sync": 0, "drifted": 0, "canonical_moved": 0,
@@ -1798,7 +1832,8 @@ def render_check(result):
         if s.get("repo_missing"):
             parts.append(f"{s['repo_missing']} repo not found")
         if s.get("stale_value"):
-            parts.append(f"{s['stale_value']} stale values")
+            n = s["stale_value"]
+            parts.append(f"{n} stale value{'' if n == 1 else 's'}")
         if s.get("restated"):
             parts.append(f"{s['restated']} restated")
     _print(", ".join(parts) + ".")
@@ -1970,13 +2005,23 @@ def cmd_validate(args):
     return 0
 
 
-def _repo_overrides(args):
+def _repo_overrides(args, manifest=None):
     out = {}
     for item in getattr(args, "repo", None) or []:
         name, sep, path = item.partition("=")
         if not sep or not name or not path:
             raise ManifestError(f"--repo expects NAME=PATH, got {item!r}")
         out[name] = path
+    if manifest is not None:
+        # An override for a name the manifest never declares would be
+        # silently unused — the same quiet misread a typo must not cause.
+        declared = manifest.get("repos") or {}
+        unknown = sorted(n for n in out if n not in declared)
+        if unknown:
+            names = ", ".join(repr(n) for n in unknown)
+            known = ", ".join(sorted(declared)) or "(none)"
+            raise ManifestError(f"--repo names a repo the manifest does not "
+                                f"declare: {names}; declared repos: {known}")
     return out
 
 
@@ -1994,7 +2039,7 @@ def cmd_check(args):
         return 2
     root = args.root or os.path.dirname(os.path.abspath(args.manifest))
     try:
-        overrides = _repo_overrides(args)
+        overrides = _repo_overrides(args, manifest)
     except ManifestError as exc:
         return _fail_config(str(exc))
     result = check(root, manifest, fetch=args.fetch,
@@ -2084,7 +2129,7 @@ def cmd_explain(args):
         return _fail_config(f"manifest invalid; run validate ({errors[0]})")
     root = args.root or os.path.dirname(os.path.abspath(args.manifest))
     try:
-        overrides = _repo_overrides(args)
+        overrides = _repo_overrides(args, manifest)
     except ManifestError as exc:
         return _fail_config(str(exc))
     result = explain(root, manifest, args.name, fetch=args.fetch,
