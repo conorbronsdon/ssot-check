@@ -346,6 +346,46 @@ class CheckTests(unittest.TestCase):
             self.assertEqual(files["a.md"], "in_sync")
             self.assertEqual(files["b.md"], "drifted")
 
+    def test_globbed_copy_matching_no_files_is_a_stale_entry(self):
+        # A copy glob that matches nothing (directory renamed, or every hit
+        # excluded by ignore_paths) checks no copies. That must not read as
+        # "in sync" — it is a manifest entry that no longer points anywhere.
+        for ignore in ("", "ignore_paths:\n  - 'docs/**'\n"):
+            with self.subTest(ignore=ignore), \
+                    tempfile.TemporaryDirectory() as tmp:
+                write(os.path.join(tmp, "index.md"), "Total Episodes: 62\n")
+                if ignore:
+                    write(os.path.join(tmp, "docs", "a.md"),
+                          "62 episodes shipped\n")
+                manifest = ignore + textwrap.dedent("""\
+                    facts:
+                      - name: episode-count
+                        type: integer
+                        canonical:
+                          file: index.md
+                          pattern: 'Total Episodes: (\\d+)'
+                        copies:
+                          - file: 'docs/*.md'
+                            pattern: '(\\d+) episodes shipped'
+                    """)
+                if ignore:
+                    # Positive control: without ignore_paths the same fixture
+                    # checks docs/a.md, so the stale entry below is caused by
+                    # the exclusion, not by a glob that failed to expand.
+                    ctrl = sc.check(tmp, sc.parse_manifest(
+                        manifest[len(ignore):]))
+                    self.assertEqual(
+                        [(c["file"], c["status"])
+                         for c in ctrl["facts"][0]["copies"]],
+                        [("docs/a.md", "in_sync")])
+                result = sc.check(tmp, sc.parse_manifest(manifest))
+                fact = result["facts"][0]
+                self.assertEqual(result["exit_code"], 1)
+                self.assertEqual(fact["status"], "stale_entry")
+                self.assertEqual(
+                    [(c["file"], c["status"]) for c in fact["copies"]],
+                    [("docs/*.md", "stale_entry")])
+
     def test_monotonic_canonical_suspect(self):
         with tempfile.TemporaryDirectory() as tmp:
             write(os.path.join(tmp, "index.md"), "Followers: 10000\n")

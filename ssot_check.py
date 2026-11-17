@@ -790,13 +790,19 @@ def _matches_any_glob(relpath, globs):
 
 
 def _expand_copy_files(root, relpath, ignore_paths):
-    """Expand a possibly-globbed copy path into concrete relative paths."""
+    """Expand a possibly-globbed copy path into concrete relative paths.
+
+    A glob that matches no checkable file yields the glob itself, so the
+    copy is reported as a missing file (stale entry) instead of vanishing
+    from the check and letting the fact pass as in sync.
+    """
     if any(ch in relpath for ch in "*?[") and not is_cross_repo(root, relpath):
         import glob as _glob
         hits = sorted(_glob.glob(_resolve(root, relpath), recursive=True))
         rels = [os.path.relpath(h, root).replace(os.sep, "/")
                 for h in hits if os.path.isfile(h)]
-        return [r for r in rels if not _matches_any_glob(r, ignore_paths)]
+        rels = [r for r in rels if not _matches_any_glob(r, ignore_paths)]
+        return rels or [relpath]
     return [relpath]
 
 
