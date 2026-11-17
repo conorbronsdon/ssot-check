@@ -52,6 +52,7 @@ class CountedBeforeMatchesTests(unittest.TestCase):
         self.assertEqual(_before("users 1,200+"), [("users", "1,200")])
         self.assertEqual(_before("users:1200"), [("users", "1200")])
         self.assertEqual(_before("users  :  1200"), [("users", "1200")])
+        self.assertEqual(_before("users  \t  \n  1200"), [("users", "1200")])
 
     def test_must_not_fire_without_a_number(self):
         self.assertEqual(_before("users: none"), [])
@@ -59,8 +60,10 @@ class CountedBeforeMatchesTests(unittest.TestCase):
 
 
 class CountedTimingTests(unittest.TestCase):
-    # Before the fix these took ~36 s and ~1.7 s respectively.
-    BUDGET_S = 1.0
+    # Before the fix the comma run took ~36 s and the whitespace run (quadratic,
+    # ~1.7 s at 20,000 spaces) ~15 s. The fixed passes take milliseconds, so a
+    # generous budget still separates linear from quadratic on a loaded runner.
+    BUDGET_S = 5.0
 
     def test_long_comma_run_is_linear(self):
         points = ",".join(["1"] * 10_000)  # ~20 KB
@@ -69,7 +72,7 @@ class CountedTimingTests(unittest.TestCase):
         self.assertEqual(result["proposals"], [])
 
     def test_long_whitespace_run_after_unit_is_linear(self):
-        result, elapsed = _discover_text("notes.md", "users" + " " * 20_000 + "\n")
+        result, elapsed = _discover_text("notes.md", "users" + " " * 60_000 + "\n")
         self.assertLess(elapsed, self.BUDGET_S, f"discover took {elapsed:.2f}s")
         self.assertEqual(result["proposals"], [])
 
@@ -80,6 +83,14 @@ class CountedTimingTests(unittest.TestCase):
         found = _after(f'<div data-points="{points}"></div> Trusted by 1,200 users')
         self.assertLess(time.perf_counter() - start, self.BUDGET_S)
         self.assertIn(("1,200", "users"), found)
+
+    def test_long_comma_run_followed_by_a_unit_is_linear(self):
+        points = ",".join(["1"] * 10_000)
+        for tail, expected in ((" users", 1), ("+ users", 1), (" xusers", 0)):
+            start = time.perf_counter()
+            found = _after(f'data-points="{points}{tail}')
+            self.assertLess(time.perf_counter() - start, self.BUDGET_S, tail)
+            self.assertEqual(len(found), expected, tail)
 
 
 if __name__ == "__main__":
