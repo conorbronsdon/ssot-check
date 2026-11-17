@@ -921,20 +921,41 @@ def _matches_any_glob(relpath, globs):
     return False
 
 
-def _expand_copy_files(root, relpath, ignore_paths):
+def _inside(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different Windows drives
+        return False
+
+
+def _expand_copy_files(root, relpath, ignore_paths, escaped=None):
     """Expand a possibly-globbed copy path into concrete relative paths.
 
     A glob that matches no checkable file yields the glob itself, so the
     copy is reported as a missing file (stale entry) instead of vanishing
     from the check and letting the fact pass as in sync.
+
+    A match that a symlink resolves outside the repo root is never returned;
+    it is appended to `escaped` (when given) so `check` can report it.
     """
     if any(ch in relpath for ch in "*?[") and not is_cross_repo(root, relpath):
         import glob as _glob
         hits = sorted(_glob.glob(_resolve(root, relpath), recursive=True))
-        rels = [os.path.relpath(h, root).replace(os.sep, "/")
-                for h in hits if os.path.isfile(h)]
-        rels = [r for r in rels if not _matches_any_glob(r, ignore_paths)]
-        return rels or [relpath]
+        real_root = os.path.realpath(root)
+        rels, outside = [], []
+        for h in hits:
+            if not os.path.isfile(h):
+                continue
+            rel = os.path.relpath(h, root).replace(os.sep, "/")
+            if _matches_any_glob(rel, ignore_paths):
+                continue
+            if _inside(os.path.realpath(h), real_root):
+                rels.append(rel)
+            else:
+                outside.append(rel)
+        if escaped is not None:
+            escaped.extend(outside)
+        return rels or ([] if outside else [relpath])
     return [relpath]
 
 
@@ -950,10 +971,68 @@ def _read_file(path):
 # Cross-repo sibling access. Never edits a sibling; `--fetch` updates its
 # remote-tracking refs and nothing else.
 # --------------------------------------------------------------------------- #
+# A sibling repo's local config is not trusted. These settings make git run
+# commands; every git call turns them off. Filter and diff drivers are named
+# per repo, so _git blanks whichever ones the repo's config defines.
+_GIT_SAFE_CONFIG = (
+    "core.fsmonitor=false",
+    f"core.hooksPath={os.devnull}",
+    "gc.auto=0",
+    "maintenance.auto=false",
+    "log.showSignature=false",
+    "protocol.ext.allow=never",
+)
+_GIT_DRIVER_KEYS = {
+    "filter": ("clean", "smudge", "process"),
+    "diff": ("textconv", "command"),
+}
+
+
+def _git_env():
+    return dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
+
+
+def _git_drivers(cwd):
+    """(section, name) of every filter and diff driver the repo's config
+    defines. Reading config runs nothing."""
+    try:
+        out = subprocess.run(
+            ["git", "config", "-z", "--name-only", "--get-regexp",
+             r"^(filter|diff)\."],
+            cwd=cwd, capture_output=True, text=True, timeout=30,
+            env=_git_env())
+        # -z: a driver name may contain whitespace.
+        names = out.stdout.split("\0") if out.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        names = []
+    drivers = set()
+    for name in names:
+        section, _, rest = name.partition(".")
+        driver = rest.rpartition(".")[0]
+        if section in _GIT_DRIVER_KEYS and driver:
+            drivers.add((section, driver))
+    return drivers
+
+
+def _git_safe_args(cwd):
+    """`-c` overrides that stop the repo's config from running commands."""
+    args = []
+    for item in _GIT_SAFE_CONFIG:
+        args += ["-c", item]
+    for section, driver in sorted(_git_drivers(cwd)):
+        for key in _GIT_DRIVER_KEYS[section]:
+            args += ["-c", f"{section}.{driver}.{key}="]
+        if section == "filter":
+            args += ["-c", f"filter.{driver}.required=false"]
+    return args
+
+
 def _git(args, cwd):
     try:
-        out = subprocess.run(["git"] + args, cwd=cwd,
-                             capture_output=True, text=True, timeout=30)
+        # surrogateescape: `-z` output carries raw, possibly non-UTF-8 paths.
+        out = subprocess.run(["git"] + _git_safe_args(cwd) + args, cwd=cwd,
+                             capture_output=True, text=True, timeout=30,
+                             errors="surrogateescape", env=_git_env())
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
@@ -988,6 +1067,25 @@ def _remote_tracking_ref(repo_root):
     return None
 
 
+def _only_filtered_changes(entries, repo_root):
+    """True when every `status -z` entry is an unstaged change to a file
+    that goes through one of the repo's clean filters. With those filters
+    off (see `_git_safe_args`), such a file can look modified when it is not
+    (git-lfs, say), so the change is unconfirmed."""
+    if any(not e.startswith(" M ") for e in entries):
+        return False
+    drivers = {d for sec, d in _git_drivers(repo_root) if sec == "filter"}
+    if not drivers:
+        return False
+    paths = [e[3:] for e in entries]
+    out = _git(["check-attr", "-z", "filter", "--"] + paths, repo_root)
+    if out is None:
+        return False
+    fields = out.split("\0")
+    values = fields[2::3][:len(paths)]
+    return len(values) == len(paths) and all(v in drivers for v in values)
+
+
 def _working_tree_source(abspath):
     """Describe the exact sibling checkout used for a local cross-repo read.
 
@@ -1017,10 +1115,15 @@ def _working_tree_source(abspath):
 
     # --no-optional-locks: plain `status` refreshes stale stat data and
     # rewrites .git/index (taking index.lock); a label must not write.
-    status = _git(["--no-optional-locks", "status", "--porcelain",
-                   "--untracked-files=normal"], repo_root)
-    if status and status.strip():
-        warnings.append("dirty working tree")
+    status = _git(["--no-optional-locks", "status", "--porcelain", "-z",
+                   "--no-renames", "--untracked-files=normal"], repo_root)
+    entries = [e for e in (status or "").split("\0") if e]
+    if entries:
+        if _only_filtered_changes(entries, repo_root):
+            warnings.append("possibly dirty working tree (the repo's git "
+                            "filters were not run)")
+        else:
+            warnings.append("dirty working tree")
 
     warning = f"; WARNING: {'; '.join(warnings)}" if warnings else ""
     return f"local {branch} ({sha}{warning})"
@@ -1420,8 +1523,18 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
 
         fact_status = "in_sync"
         for cp in fact.get("copies") or []:
+            escaped = []
             concretes = ([cp["file"]] if cp.get("repo") else
-                         _expand_copy_files(root, cp["file"], ignore_paths))
+                         _expand_copy_files(root, cp["file"], ignore_paths,
+                                            escaped))
+            for rel in escaped:
+                fr["copies"].append({
+                    "file": rel, "cross_repo": False, "status": "stale_entry",
+                    "note": "glob match is a symlink that resolves outside "
+                            "the repo; not read"})
+                counts["stale_entry"] += 1
+                if fact_status == "in_sync":
+                    fact_status = "stale_entry"
             for concrete in concretes:
                 copy_rel = _rel_under_root(
                     root, _locate(root, concrete, cp.get("repo"), repos)[0])
