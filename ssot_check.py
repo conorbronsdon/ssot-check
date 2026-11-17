@@ -1792,6 +1792,266 @@ def _suggest_name(unit, kind, value):
 
 
 # --------------------------------------------------------------------------- #
+# pointers. A pointer replaces a copied value with a reference to its owner:
+#   ⏳ <what>: `<file>`          or          ⏳ <what>: [label](<file>)
+# `pointers` finds every pointer marker in the repo's prose and checks that
+# its target exists. A target resolves, first match wins, from the repo root,
+# then the pointing file's directory, then another repo: `~/repo/path`,
+# `repo:path`, or `repo/path` whose first segment is a repo found the same way
+# `check` finds named repos. Fragments (`#heading`) and `:line` suffixes are
+# stripped and not checked.
+#
+#   MISSING          the target does not exist anywhere it could resolve
+#   REPO NOT FOUND   the target names another repo that is not checked out
+#   MALFORMED        a marker with no target; fails only with --strict
+#
+# Markers inside inline code or fenced blocks are documentation about the
+# convention, not pointers, and are skipped, as are placeholder targets
+# (`<owner>`) and URLs.
+# --------------------------------------------------------------------------- #
+POINTER_MARKER = "⏳"
+_PTR_TARGET = (r"(?:`(?P<code>[^`\n]+)`|\[[^\]\n]*\]\((?P<link>[^)\s]+)\)"
+               r"|(?P<url>https?://[^\s)]+))")
+_PTR_REPO = r"(?:(?P<repo>[A-Za-z0-9][A-Za-z0-9._-]*)[ \t]+)?"
+# What may follow the marker. Each form puts the target straight after the
+# marker, the colon, or an opening parenthesis; "⏳ Open: the `x` branch" is
+# not a pointer, and neither is "⏳ pointer." with no target at all.
+_PTR_FORMS = [
+    # ⏳ `file`   (a bare target, common in table cells)
+    re.compile(r"^[ \t]*[*_]*[ \t]*" + _PTR_TARGET),
+    # ⏳ <what>: `file`   ⏳ **<what>:** `file`   ⏳ <what>: repo `file`
+    re.compile(r"^(?P<what>[^:`\n]*?):[*_]*[ \t]*" + _PTR_REPO + _PTR_TARGET),
+    # ⏳ <what> (`file`)
+    re.compile(r"^(?P<what>[^:`(\n]*?)\([ \t]*" + _PTR_TARGET),
+]
+
+
+def _match_pointer(text):
+    for form in _PTR_FORMS:
+        m = form.match(text)
+        if m:
+            target = m.group("code") or m.group("link") or m.group("url")
+            repo = m.groupdict().get("repo")
+            return target, repo
+    return None
+
+
+_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def _code_spans(line):
+    """Return [(start, end)] of inline code spans on one line."""
+    spans, i = [], 0
+    while True:
+        a = line.find("`", i)
+        if a < 0:
+            return spans
+        run = len(line[a:]) - len(line[a:].lstrip("`"))
+        b = line.find("`" * run, a + run)
+        if b < 0:
+            return spans
+        spans.append((a, b + run))
+        i = b + run
+
+
+def _clean_target(raw):
+    t = raw.strip()
+    if " " in t:
+        t = t.split(" ", 1)[0]
+    t = t.split("#", 1)[0]
+    t = re.sub(r":\d+(?:-\d+)?$", "", t)
+    return t.rstrip(".,;")
+
+
+def find_pointers(text, marker=POINTER_MARKER):
+    """Yield (line, raw_target_or_None, repo_hint_or_None) per marker."""
+    lines = text.split("\n")
+    in_fence = False
+    for i, line in enumerate(lines):
+        if _FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        spans = _code_spans(line)
+        start = 0
+        while True:
+            pos = line.find(marker, start)
+            if pos < 0:
+                break
+            start = pos + len(marker)
+            if any(a <= pos < b for a, b in spans):
+                continue
+            nxt = line.find(marker, start)
+            rest = line[start:nxt] if nxt >= 0 else line[start:]
+            found = _match_pointer(rest)
+            if not found and nxt < 0 and i + 1 < len(lines) and \
+                    not _FENCE.match(lines[i + 1]) and \
+                    marker not in lines[i + 1]:
+                # A pointer wrapped onto the next line, anywhere in it.
+                found = _match_pointer(rest.rstrip() + " " +
+                                       lines[i + 1].strip())
+            if not found:
+                yield i + 1, None, None
+                continue
+            yield i + 1, found[0], found[1]
+
+
+def _pointer_repo(name, root, repos_cache, manifest, overrides, env):
+    if name not in repos_cache:
+        declared = dict(manifest.get("repos") or {}) if manifest else {}
+        synthetic = {"repos": {name: declared.get(name)}}
+        repos_cache[name] = resolve_repos(root, synthetic, overrides,
+                                          env)[name]
+    return repos_cache[name]
+
+
+def resolve_pointer(root, rel, target, manifest=None, overrides=None,
+                    env=None, repos_cache=None, repo_hint=None):
+    """Return (status, resolved_path_or_note).
+
+    repo_hint is a repo name written just before the target, as in
+    "cot-production `path`": the target is looked up in that repo. A hint
+    that is neither declared in the manifest's repos nor found on disk is
+    ordinary prose ("Open: the `branch`"), so the line is not a pointer.
+    """
+    repos_cache = {} if repos_cache is None else repos_cache
+    t = target.replace("\\", "/")
+    if repo_hint and not t.startswith("~/"):
+        info = _pointer_repo(repo_hint, root, repos_cache, manifest,
+                             overrides, env)
+        declared = repo_hint in ((manifest or {}).get("repos") or {}) or \
+            repo_hint in (overrides or {})
+        if not info.get("path") and not declared:
+            return "malformed", (f"{repo_hint!r} before the target is not a "
+                                 "known repo; the target must follow the "
+                                 "colon")
+        if not info.get("path"):
+            return "repo_missing", f"repo {repo_hint!r} not found (looked " \
+                                   f"in: {', '.join(info['looked'])})"
+        if os.path.exists(os.path.join(info["path"], t.lstrip("/"))):
+            return "ok", f"{repo_hint}:{t.lstrip('/')}"
+        return "missing", f"not found in repo {repo_hint!r} ({info['path']})"
+    candidates = []
+    repo_ref = None
+    if t.startswith("~/"):
+        name, _, sub = t[2:].partition("/")
+        repo_ref = (name, sub)
+    elif re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*:[^/\\]", t) and \
+            not re.match(r"^[A-Za-z]:", t):
+        name, _, sub = t.partition(":")
+        repo_ref = (name, sub)
+    else:
+        candidates.append(_resolve(root, t.lstrip("/")))
+        candidates.append(_resolve(os.path.join(root, os.path.dirname(rel)),
+                                   t))
+    for c in candidates:
+        if os.path.exists(c):
+            return "ok", os.path.relpath(c, root).replace(os.sep, "/")
+    if repo_ref is None and "/" in t:
+        # `repo/path`: try the first segment as another repo.
+        name, _, sub = t.partition("/")
+        info = _pointer_repo(name, root, repos_cache, manifest, overrides,
+                             env)
+        if info.get("path") and os.path.exists(os.path.join(info["path"],
+                                                            sub)):
+            return "ok", f"{name}:{sub}"
+        return "missing", "not found from the repo root or the file's " \
+                          "directory"
+    if repo_ref is None:
+        return "missing", "not found from the repo root or the file's " \
+                          "directory"
+    name, sub = repo_ref
+    info = _pointer_repo(name, root, repos_cache, manifest, overrides, env)
+    if not info.get("path"):
+        return "repo_missing", f"repo {name!r} not found (looked in: " \
+                               f"{', '.join(info['looked'])})"
+    if os.path.exists(os.path.join(info["path"], sub)):
+        return "ok", f"{name}:{sub}"
+    return "missing", f"not found in repo {name!r} ({info['path']})"
+
+
+def check_pointers(root, manifest=None, paths=None, ignore=None,
+                   marker=POINTER_MARKER, overrides=None, env=None,
+                   skip_marker=None):
+    paths = paths or GUARD_DEFAULT_PATHS
+    ignore = list(ignore or []) + list((manifest or {}).get("ignore_paths")
+                                       or [])
+    skip_marker = skip_marker or (manifest or {}).get("guard_skip_marker")
+    skip = re.compile(skip_marker, re.MULTILINE) if skip_marker else None
+    repos_cache = {}
+    results = []
+    counts = {"ok": 0, "missing": 0, "repo_missing": 0, "malformed": 0,
+              "skipped": 0}
+    files = 0
+    for rel in _repo_files(root):
+        if not any(_path_glob(rel, p) for p in paths):
+            continue
+        if any(_path_glob(rel, g) for g in ignore):
+            continue
+        text = _read_file(_resolve(root, rel))
+        if text is None or marker not in text:
+            continue
+        if skip and skip.search(text):
+            continue
+        files += 1
+        for line, raw, hint in find_pointers(text, marker):
+            entry = {"file": rel, "line": line, "target": raw}
+            if raw is None:
+                entry["status"] = "malformed"
+                entry["note"] = (f"not '{marker} <what>: `file`' (or "
+                                 "[label](file)); the target must follow "
+                                 "the colon")
+            else:
+                target = _clean_target(raw)
+                if not target or "<" in raw or ">" in raw or \
+                        "://" in target or target.startswith("mailto:"):
+                    entry["status"] = "skipped"
+                else:
+                    if hint:
+                        entry["repo"] = hint
+                    status, note = resolve_pointer(
+                        root, rel, target, manifest, overrides, env,
+                        repos_cache, hint)
+                    entry["status"] = status
+                    entry["resolved" if status == "ok" else "note"] = note
+            counts[entry["status"]] += 1
+            results.append(entry)
+    return {"version": __version__, "root": os.path.abspath(root),
+            "marker": marker, "files_with_pointers": files,
+            "pointers": results, "summary": counts}
+
+
+def render_pointers(result, strict=False):
+    s = result["summary"]
+    total = sum(v for k, v in s.items())
+    _print(f"SSOT POINTERS — {total} {result['marker']} markers in "
+           f"{result['files_with_pointers']} files")
+    _print("")
+    for status, title in (("missing", "MISSING"),
+                          ("repo_missing", "REPO NOT FOUND"),
+                          ("malformed", "MALFORMED" +
+                           ("" if strict else " (advisory; --strict fails)"))):
+        rows = [p for p in result["pointers"] if p["status"] == status]
+        if not rows:
+            continue
+        _print(f"{title} ({len(rows)}):")
+        for p in rows:
+            tgt = f" -> {p['target']}" if p.get("target") else ""
+            _print(f"  - {p['file']}:{p['line']}{tgt}: {p.get('note')}")
+        _print("")
+    _print(f"{s['ok']} resolve, {s['missing']} missing, "
+           f"{s['repo_missing']} repo not found, {s['malformed']} malformed, "
+           f"{s['skipped']} skipped (placeholders, URLs).")
+
+
+def pointers_exit_code(result, strict=False):
+    s = result["summary"]
+    bad = s["missing"] + s["repo_missing"] + (s["malformed"] if strict else 0)
+    return 1 if bad else 0
+
+
+# --------------------------------------------------------------------------- #
 # Reporting (human-readable)
 # --------------------------------------------------------------------------- #
 def _print(*a):
@@ -2438,6 +2698,45 @@ def cmd_explain(args):
     return 0
 
 
+def cmd_pointers(args):
+    manifest = None
+    mpath = args.manifest
+    if mpath is None and os.path.isfile(os.path.join(args.root or ".",
+                                                     ".ssot.yaml")):
+        mpath = os.path.join(args.root or ".", ".ssot.yaml")
+    if mpath is not None:
+        try:
+            manifest = load_manifest(mpath)
+        except ManifestError as exc:
+            return _fail_config(f"{mpath}: {exc}")
+        errors = validate_manifest(manifest)
+        if errors:
+            return _fail_config(f"manifest invalid; run validate "
+                                f"({errors[0]})")
+    root = args.root or (os.path.dirname(os.path.abspath(mpath)) if mpath
+                         else ".")
+    overrides = {}
+    for item in args.repo or []:
+        name, sep, path = item.partition("=")
+        if not sep or not name or not path:
+            return _fail_config(f"--repo expects NAME=PATH, got {item!r}")
+        overrides[name] = path
+    try:
+        if args.skip_marker:
+            re.compile(args.skip_marker)
+    except re.error as exc:
+        return _fail_config(f"--skip-marker: invalid regex ({exc})")
+    result = check_pointers(root, manifest, paths=args.path,
+                            ignore=args.ignore, marker=args.marker,
+                            overrides=overrides,
+                            skip_marker=args.skip_marker)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        render_pointers(result, strict=args.strict)
+    return pointers_exit_code(result, strict=args.strict)
+
+
 def _add_repo(sp):
     sp.add_argument("--repo", action="append", metavar="NAME=PATH",
                     help="where a named repo (manifest 'repos:') is checked "
@@ -2513,6 +2812,33 @@ def build_parser():
                     help="apply the changes; without it, only print a diff")
     _add_repo(fx)
     fx.set_defaults(func=cmd_fix)
+    pt = sub.add_parser("pointers",
+                        help="check that every pointer marker's target "
+                             "exists")
+    pt.add_argument("--root", default=None,
+                    help="tree to scan (default: the manifest's directory, "
+                         "or .)")
+    pt.add_argument("-f", "--manifest", default=None,
+                    help="manifest whose ignore_paths and repos apply "
+                         "(default: <root>/.ssot.yaml when present)")
+    pt.add_argument("--marker", default=POINTER_MARKER,
+                    help=f"pointer marker (default: {POINTER_MARKER})")
+    pt.add_argument("--path", action="append",
+                    help="glob of files to scan; repeatable (default: "
+                         "Markdown, text and reST)")
+    pt.add_argument("--ignore", action="append",
+                    help="glob or dir/ prefix to skip; repeatable")
+    pt.add_argument("--repo", action="append", metavar="NAME=PATH",
+                    help="where another repo named by a pointer is checked "
+                         "out; repeatable")
+    pt.add_argument("--skip-marker", default=None,
+                    help="regex; files matching it are skipped (default: "
+                         "the manifest's guard_skip_marker)")
+    pt.add_argument("--strict", action="store_true",
+                    help="also fail on markers with no target")
+    pt.add_argument("--json", action="store_true",
+                    help="machine-readable output")
+    pt.set_defaults(func=cmd_pointers)
     return p
 
 
@@ -2522,7 +2848,7 @@ def main(argv=None):
     # Default subcommand is `check`. Global options (--version, -h/--help) are
     # owned by the top-level parser and must not be swept into the default
     # subcommand — doing so routed `--version` to `check`, which rejected it.
-    known = {"check", "validate", "discover", "explain", "fix"}
+    known = {"check", "validate", "discover", "explain", "fix", "pointers"}
     global_opts = {"-h", "--help", "--version"}
     if argv and argv[0] in global_opts:
         pass
