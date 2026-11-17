@@ -100,6 +100,46 @@ def _strip_comment(line):
     return "".join(out).rstrip()
 
 
+def _reject_flow(scalar, lineno):
+    """Reject unquoted values that real YAML would read as something other
+    than text: flow collections (`{a: 1}`, `[a, b]`), anchors and aliases,
+    tags, and a sequence started on its key's line. Reading them as strings
+    would silently change their meaning, so stop with a clear error."""
+    s = scalar.strip()
+    if (s.startswith("{") and s.endswith("}")) or \
+            (s.startswith("[") and s.endswith("]")):
+        kind = "mapping {...}" if s[0] == "{" else "list [...]"
+        how = ("write one 'key: value' per line, indented under the key"
+               if s[0] == "{" else "write one '- item' per line, indented "
+               "under the key")
+        raise ManifestError(f"flow-style {kind} is not supported: {how}. "
+                            "To keep it as text (a regex, say), put it in "
+                            "single quotes", lineno)
+    quote_hint = "; put it in single quotes to keep it as text"
+    if s[:1] in ("&", "*"):
+        raise ManifestError("anchors and aliases (&name, *name) are not "
+                            "supported" + quote_hint, lineno)
+    if s[:1] == "!":
+        raise ManifestError("explicit tags (!tag) are not supported" +
+                            quote_hint, lineno)
+    if s == "-" or s.startswith("- "):
+        raise ManifestError("a sequence item cannot start on its key's line: "
+                            "put each '- item' on its own line, indented "
+                            "under the key" + quote_hint, lineno)
+
+
+def _scalar(text, lineno):
+    """A value on a key or sequence line: `[]` and `{}` are the empty list
+    and mapping, as in YAML; other flow collections are rejected."""
+    s = text.strip()
+    if s == "[]":
+        return []
+    if s == "{}":
+        return LineDict()
+    _reject_flow(s, lineno)
+    return _unquote(s)
+
+
 def _unquote(scalar):
     s = scalar.strip()
     if len(s) >= 2 and s[0] == s[-1] == "'":
@@ -187,7 +227,7 @@ class _Parser:
                 else:
                     d[key] = None
             else:
-                d[key] = _unquote(valpart)
+                d[key] = _scalar(valpart, lineno)
         return d
 
     def parse_seq(self, indent):
@@ -221,7 +261,7 @@ class _Parser:
                 items.append(self.parse_map(map_indent))
             else:
                 self.pos += 1
-                items.append(_unquote(after))
+                items.append(_scalar(after, lineno))
         return items
 
     def parse_block_scalar(self, key_indent, style):

@@ -260,9 +260,9 @@ class ValidationTests(unittest.TestCase):
                   pattern: '(\\d+)'
                 copies: []
             """))
-        # copies: [] parses to None here (empty block) -> reported as missing/empty
+        self.assertEqual(m["facts"][0]["copies"], [])
         errors = sc.validate_manifest(m)
-        self.assertTrue(errors)
+        self.assertTrue(any("'copies' is empty" in e for e in errors), errors)
 
 
 # --------------------------------------------------------------------------- #
