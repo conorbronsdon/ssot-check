@@ -26,7 +26,7 @@ import subprocess
 import sys
 from datetime import date, datetime
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}

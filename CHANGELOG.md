@@ -6,6 +6,8 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+## [0.1.4] — 2026-11-16
+
 ### Fixed
 
 - Discovery no longer proposes conventional `127.0.0.1` loopback examples as
@@ -28,6 +30,8 @@ All notable changes to ssot-check are documented here. The format follows
 
 - Marketplace subtitle shortened to the portal's 30-character limit; listing
   metadata includes the website, privacy policy, and starter prompts.
+- README marks the project as in maintenance mode: stable, receiving security
+  fixes, with no new features planned.
 
 ## [0.1.3] — 2026-09-08
 
@@ -170,6 +174,7 @@ GitHub Action.
   detection, exit codes, discover heuristics) with fixtures.
 - `.github/workflows/test.yml` — CI running the suite on push and PR.
 
+[0.1.4]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.4
 [0.1.3]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.3
 [0.1.2]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.2
 [0.1.1]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.1
