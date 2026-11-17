@@ -671,6 +671,44 @@ class CrossRepoFetchTests(unittest.TestCase):
                 os.path.exists(os.path.join(sib, ".git", "FETCH_HEAD")),
                 "FETCH_HEAD created without --fetch")
 
+    def test_default_read_does_not_rewrite_sibling_index(self):
+        """Labelling the checkout runs `git status`, which by default
+        refreshes stale stat data and rewrites .git/index (taking
+        index.lock). The default path must not rewrite the sibling's
+        .git/index. (fsmonitor and untracked-cache state are out of scope.)"""
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = self._fixture(parent)
+            # A tracked file whose content is unchanged but whose stat data
+            # no longer matches the index: exactly what status refreshes.
+            write(os.path.join(sib, "notes.txt"), "unchanged\n")
+            git(sib, "add", "notes.txt")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "--quiet", "-m", "notes")
+            os.utime(os.path.join(sib, "notes.txt"), (1_000_000, 1_000_000))
+            index = os.path.join(sib, ".git", "index")
+            with open(index, "rb") as fh:
+                before = fh.read()
+            before_mtime = os.stat(index).st_mtime_ns
+
+            result = sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST))
+            self.assertIn("dirty working tree",
+                          result["facts"][0]["copies"][0]["source"])
+
+            with open(index, "rb") as fh:
+                self.assertEqual(fh.read(), before,
+                                 "sibling .git/index rewritten without --fetch")
+            self.assertEqual(os.stat(index).st_mtime_ns, before_mtime)
+
+            # Negative control: plain `git status` on the same fixture does
+            # rewrite the index, so the assertions above are live here (a
+            # filesystem that hid the stale stat data would fail this, not
+            # pass vacuously).
+            git(sib, "status", "--porcelain")
+            with open(index, "rb") as fh:
+                self.assertNotEqual(fh.read(), before,
+                                    "fixture is not stale: plain status "
+                                    "left .git/index unchanged")
+
     def test_fetch_runs_only_fetch_and_reads(self):
         """Must-still-fire: --fetch does fetch, and the write surface stops
         there — no pull/rebase/merge/checkout/reset, and the working tree and

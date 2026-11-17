@@ -934,8 +934,10 @@ def _working_tree_source(abspath):
         if branch != default_branch:
             warnings.append(f"non-default branch; default is {default_ref}")
 
-    status = _git(["status", "--porcelain", "--untracked-files=normal"],
-                  repo_root)
+    # --no-optional-locks: plain `status` refreshes stale stat data and
+    # rewrites .git/index (taking index.lock); a label must not write.
+    status = _git(["--no-optional-locks", "status", "--porcelain",
+                   "--untracked-files=normal"], repo_root)
     if status and status.strip():
         warnings.append("dirty working tree")
 
