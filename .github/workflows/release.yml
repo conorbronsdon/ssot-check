@@ -74,14 +74,26 @@ jobs:
               echo "::error::Tag $TAG exists but its ssot_check.py does not set __version__ = \"$VERSION\"; fix the tag by hand."
               exit 1
             fi
+            if ! git merge-base --is-ancestor "$TAG^{commit}" HEAD; then
+              echo "::error::Tag $TAG exists but is not on main; fix the tag by hand."
+              exit 1
+            fi
             echo "Tag $TAG exists at $(git rev-list -n1 "$TAG") and carries $VERSION; not moving it."
             exit 0
           fi
-          # Tag the commit that introduced this version, not whatever HEAD is now,
-          # so a later catch-up dispatch tags the same source as the merge would have.
-          TARGET="$(git log -1 --format=%H -S"__version__ = \"$VERSION\"" -- ssot_check.py)"
+          # Tag main's own commit that introduced this version (first parent, so a merge
+          # commit rather than a branch commit), not whatever HEAD is now: a later catch-up
+          # dispatch tags the same source the merge would have.
+          TARGET="$(git log -1 --first-parent --format=%H -S"__version__ = \"$VERSION\"" -- ssot_check.py)"
           if [ -z "$TARGET" ] || ! git merge-base --is-ancestor "$TARGET" HEAD; then
             echo "::error::Could not find the commit on main that set __version__ = \"$VERSION\"."
+            exit 1
+          fi
+          # The tagged source must also carry this version's dated changelog section,
+          # or the release step could never publish its notes.
+          git show "$TARGET:CHANGELOG.md" > "$RUNNER_TEMP/target-CHANGELOG.md"
+          if ! python3 scripts/release_meta.py notes "$VERSION" --file "$RUNNER_TEMP/target-CHANGELOG.md" >/dev/null; then
+            echo "::error::Commit $TARGET sets $VERSION but has no dated changelog section for it; not tagging."
             exit 1
           fi
           git config user.name "github-actions[bot]"
