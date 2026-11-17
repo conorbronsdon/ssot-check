@@ -25,6 +25,9 @@ The project is no longer in maintenance mode; new features are being added.
   nowhere is reported as **REPO NOT FOUND** with every location tried, instead
   of as a moved canonical or an unverified copy. Exits `1`.
 - `check --json` includes a `repos` block showing how each name resolved.
+- Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
+  publishes the GitHub release from its changelog section
+  (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
 
 ## [0.1.4] — 2026-11-16
 
