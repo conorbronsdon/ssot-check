@@ -264,6 +264,87 @@ class ValidationTests(unittest.TestCase):
         errors = sc.validate_manifest(m)
         self.assertTrue(errors)
 
+    def test_nested_value_where_a_string_is_required_is_flagged(self):
+        # A block (mapping or list) under a key that takes a string must be a
+        # validation error. It used to raise TypeError inside validate (a
+        # traceback, exit 1) or pass validate and crash check.
+        cases = {
+            "name": ("name: episode-count", "name:\n      x: y"),
+            "type": ("type: integer", "type:\n      x: y"),
+            "file": ("file: index.md", "file:\n        - index.md"),
+            "pattern": ("pattern: '(\\d+) episodes'",
+                        "pattern:\n          x: y"),
+        }
+        for key, (old, new) in cases.items():
+            with self.subTest(key=key):
+                self.assertEqual(self.BASE.count(old), 1)
+                m = sc.parse_manifest(self.BASE.replace(old, new))
+                errors = sc.validate_manifest(m)
+                self.assertTrue(any(key in e and "string" in e
+                                    for e in errors), errors)
+
+        rounding = sc.parse_manifest(self.BASE.replace(
+            "pattern: '(\\d+) episodes'",
+            "pattern: '(\\d+) episodes'\n        rounding:\n          - a"))
+        self.assertTrue(any("rounding" in e
+                            for e in sc.validate_manifest(rounding)))
+
+        ignore = sc.parse_manifest("ignore_paths:\n  - x: y\n" + self.BASE)
+        self.assertTrue(any("ignore_paths" in e
+                            for e in sc.validate_manifest(ignore)))
+
+    NAMED_FLOOR = textwrap.dedent("""\
+        repos:
+          site:
+            path: ../site
+        facts:
+          - name: episode-count
+            type: integer
+            canonical:
+              file: index.md
+              pattern: 'Total: (\\d+)'
+            copies:
+              - file: kit.md
+                pattern: '(\\d+) episodes'
+                relation: floor
+              - repo: site
+                file: feed.json
+                json: episodes.#
+        """)
+
+    def test_nested_value_in_newer_string_keys_is_flagged(self):
+        # Keys added with guards, named repos, JSON locators and floors are
+        # strings too. A block there crashed validate (unhashable dict) or
+        # passed validate and crashed check.
+        self.assertEqual(sc.validate_manifest(
+            sc.parse_manifest(self.NAMED_FLOOR)), [])
+        cases = {
+            "repo": ("repo: site", "repo:\n          x: y"),
+            "relation": ("relation: floor", "relation:\n          x: y"),
+            "json": ("json: episodes.#", "json:\n          x: y"),
+            "path": ("    path: ../site", "    path:\n      x: y"),
+            "guard_skip_marker": ("repos:\n",
+                                  "guard_skip_marker:\n  x: y\nrepos:\n"),
+        }
+        for key, (old, new) in cases.items():
+            with self.subTest(key=key):
+                self.assertEqual(self.NAMED_FLOOR.count(old), 1)
+                m = sc.parse_manifest(self.NAMED_FLOOR.replace(old, new))
+                errors = sc.validate_manifest(m)
+                self.assertTrue(any(key in e and "string" in e
+                                    for e in errors), errors)
+
+    def test_nested_value_is_a_config_error_on_the_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, ".ssot.yaml"),
+                  self.BASE.replace("type: integer", "type:\n      x: y"))
+            for argv in (["check"], ["validate"]):
+                with self.subTest(argv=argv):
+                    r = subprocess.run([sys.executable, CLI] + argv, cwd=tmp,
+                                       capture_output=True, text=True)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertNotIn("Traceback", r.stderr)
+
 
 # --------------------------------------------------------------------------- #
 class CheckTests(unittest.TestCase):
