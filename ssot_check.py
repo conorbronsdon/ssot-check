@@ -1567,10 +1567,14 @@ _UNIT_RE = "|".join(sorted(set(UNIT_NOUNS), key=len, reverse=True))
 # Counted values carry their own unit noun in the match, so the unit is
 # read from the capture — never from a wide context window (which would
 # misattribute a nearby unrelated noun).
+# Both are linear on long runs (#25). `(?<![\d,])` starts a count only at the
+# head of a digit/comma run, so "1,1,1,..." is not retried from every digit;
+# `\s*(?:[:=]\s*)?` replaces `\s*[:=]?\s*`, which split a whitespace run
+# between two quantifiers and backtracked through it quadratically.
 _COUNTED_AFTER = re.compile(
-    r"\b(\d[\d,]{1,})\s?\+?\s*(" + _UNIT_RE + r")\b", re.I)
+    r"(?<![\d,])\b(\d[\d,]{1,})\s?\+?\s*(" + _UNIT_RE + r")\b", re.I)
 _COUNTED_BEFORE = re.compile(
-    r"\b(" + _UNIT_RE + r")\b\s*[:=]?\s*(\d[\d,]{1,})\+?", re.I)
+    r"\b(" + _UNIT_RE + r")\b\s*(?:[:=]\s*)?(\d[\d,]{1,})\+?", re.I)
 
 # Generic value-bearing patterns. Unit is not reliably inferable; left None.
 # Version is restricted to x.y.z style to avoid catching "99.9" from a percent.

@@ -50,6 +50,14 @@ The project is no longer in maintenance mode; new features are being added.
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
 
+### Fixed
+
+- `discover` no longer stalls on long digit/comma runs or long whitespace runs.
+  A 20 KB `data-points="1,1,1,…"` attribute took about 30 s, and a unit noun
+  followed by 20 K spaces took about 2 s; both now finish in milliseconds. A
+  count now starts only at the head of a digit run, so a mid-token tail such
+  as the `000 users` in `a1,000 users` is no longer proposed (#25).
+
 ## [0.1.4] — 2026-11-16
 
 ### Fixed
