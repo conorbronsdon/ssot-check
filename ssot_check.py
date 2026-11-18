@@ -2627,7 +2627,8 @@ def load_fleet_file(path):
         rp = os.path.expanduser(item["path"])
         out.append({"path": rp if os.path.isabs(rp) else
                     os.path.normpath(os.path.join(base, rp)),
-                    "manifest": manifest})
+                    "manifest": manifest,
+                    "explicit": "manifest" in item})
     return out
 
 
@@ -2643,6 +2644,10 @@ def fleet(entries, fetch=False, repo_overrides=None, env=None, today=None):
         if not os.path.isdir(root):
             row.update(status="repo_missing",
                        note=f"directory not found: {root}")
+        elif not os.path.isfile(mpath) and entry.get("explicit"):
+            row.update(status="config_error",
+                       note=f"manifest not found: {entry['manifest']} (named "
+                            "in the fleet file)")
         elif not os.path.isfile(mpath):
             row.update(status="no_manifest",
                        note=f"no {entry.get('manifest') or '.ssot.yaml'}")
@@ -2665,13 +2670,12 @@ def fleet(entries, fetch=False, repo_overrides=None, env=None, today=None):
                 row.update(status="ok" if res["exit_code"] == 0
                            else "problems", result=res)
         results.append(row)
-    declared_anywhere = set()
-    for row in results:
-        if "result" in row:
-            declared_anywhere.update(row["result"].get("repos") or {})
     statuses = [r["status"] for r in results]
+    checked = statuses.count("ok") + statuses.count("problems")
     if "config_error" in statuses:
         code = 2
+    elif not checked and "repo_missing" not in statuses:
+        code = 2  # every repo was skipped: nothing was checked
     elif "problems" in statuses or "repo_missing" in statuses:
         code = 1
     else:
@@ -2715,6 +2719,9 @@ def render_fleet(result):
     _print(f"{s['ok']} in sync, {s['problems']} with problems, "
            f"{s['repo_missing']} missing, {s['config_error']} config errors, "
            f"{s['no_manifest']} without a manifest.")
+    if not s["ok"] and not s["problems"] and not s["repo_missing"] \
+            and not s["config_error"]:
+        _print("No repo had a manifest, so nothing was checked.")
 
 
 def cmd_fleet(args):
@@ -2732,7 +2739,8 @@ def cmd_fleet(args):
     except ManifestError as exc:
         return _fail_config(str(exc))
     result = fleet(entries, fetch=args.fetch, repo_overrides=overrides)
-    if overrides:
+    if overrides and not any(r["status"] == "config_error"
+                             for r in result["repos"]):
         declared = set()
         for row in result["repos"]:
             if "result" in row:

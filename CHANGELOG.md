@@ -42,8 +42,9 @@ The project is no longer in maintenance mode; new features are being added.
 - **`fleet` subcommand.** Checks several repos, each with its own manifest and
   root, and gives one report and one exit code (`2` for any invalid
   manifest, `1` for any problems or missing repo directory, else `0`). Repos
-  come from the command line or a fleet file; a repo without a manifest is
-  skipped.
+  come from the command line or a fleet file; a repo without a `.ssot.yaml`
+  is skipped, but a manifest the fleet file names must exist, and a run that
+  checks no repo exits `2`.
 - **`pointers` subcommand.** Finds every pointer marker (default `⏳`) in the
   repo's prose and checks that its target exists, resolving from the repo
   root, the pointing file's directory, or another repo (`~/repo/path`,

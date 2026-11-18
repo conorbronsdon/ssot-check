@@ -146,5 +146,50 @@ class FleetTests(unittest.TestCase):
             self.assertEqual(r["exit_code"], 0)
 
 
+    def test_named_manifest_that_is_missing_is_a_config_error(self):
+        # A fleet file that names a manifest (a typo here) must not pass as a
+        # skipped repo; only an unnamed default .ssot.yaml may be absent.
+        with tempfile.TemporaryDirectory() as parent:
+            make_repo(parent, "a")
+            make_repo(parent, "cfg", manifest=None)
+            write(os.path.join(parent, "cfg", "config", "ssot.yaml"), MANIFEST)
+            fpath = os.path.join(parent, "fleet.yaml")
+            write(fpath, "repos:\n  - a\n  - path: cfg\n"
+                         "    manifest: config/ssot.yml\n")
+            r = sc.fleet(sc.load_fleet_file(fpath), env={})
+            self.assertEqual(r["exit_code"], 2)
+            self.assertEqual(r["repos"][1]["status"], "config_error")
+            self.assertIn("config/ssot.yml", r["repos"][1]["note"])
+            write(fpath, "repos:\n  - a\n  - cfg\n")  # unnamed: a skip
+            r = sc.fleet(sc.load_fleet_file(fpath), env={})
+            self.assertEqual(r["exit_code"], 0)
+            self.assertEqual(r["repos"][1]["status"], "no_manifest")
+
+    def test_a_fleet_that_checks_nothing_fails(self):
+        with tempfile.TemporaryDirectory() as parent:
+            p1 = make_repo(parent, "p1", manifest=None)
+            p2 = make_repo(parent, "p2", manifest=None)
+            r = sc.fleet([{"path": p1}, {"path": p2}], env={})
+            self.assertEqual(r["exit_code"], 2)
+            out = io.StringIO()
+            with unittest.mock.patch("sys.stdout", out):
+                self.assertEqual(sc.main(["fleet", p1, p2]), 2)
+            self.assertIn("nothing was checked", out.getvalue())
+            a = make_repo(parent, "a")
+            self.assertEqual(sc.fleet([{"path": a}, {"path": p1}],
+                                      env={})["exit_code"], 0)
+
+    def test_repo_flag_does_not_hide_a_manifest_error(self):
+        with tempfile.TemporaryDirectory() as parent:
+            bad = make_repo(parent, "bad", manifest="facts: 3\n")
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch("sys.stdout", out), \
+                    unittest.mock.patch("sys.stderr", err):
+                self.assertEqual(sc.main(["fleet", bad, "--repo",
+                                          "site=/x"]), 2)
+            self.assertNotIn("no manifest declares", err.getvalue())
+            self.assertIn("ERROR", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

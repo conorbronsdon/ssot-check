@@ -486,7 +486,9 @@ repos:
 The report gives one line per repo, then the full `check` output for each repo
 with problems. The exit code is the worst case: `2` if any manifest is
 invalid, `1` if any repo has problems or its directory is missing, else `0`. A
-repo without a manifest is listed as skipped and does not fail the run.
+repo without a `.ssot.yaml` is listed as skipped and does not fail the run, but
+a manifest the fleet file names must exist (`2` if it does not), and a run in
+which every repo was skipped exits `2`: nothing was checked.
 `--repo NAME=PATH` applies to every manifest that declares `NAME`, and is a
 configuration error if none does. `--fetch` and `--json` work as for `check`.
 
