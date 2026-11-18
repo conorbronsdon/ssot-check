@@ -59,6 +59,8 @@ python3 ssot_check.py <command> [options]
   validate   structural check of the manifest against the schema
   discover   propose drift-prone facts from prose (writes nothing)
   explain    show one fact's canonical value and all copies
+  fix        rewrite drifted local copies from the canonical (diff; --write applies)
+  pointers   check that every pointer marker's target file exists
 ```
 
 Common options (`check`, `validate`, `explain`):
@@ -131,6 +133,9 @@ manifest checks, including checks for copied addresses.
 
 `.ssot.yaml` lives at the repo root. Annotated template: [`.ssot.example.yaml`](.ssot.example.yaml).
 Formal schema for editors/CI: [`schema/ssot.schema.json`](schema/ssot.schema.json).
+A key the schema does not define is a validation error (exit `2`), so a
+misspelling such as `gaurd:` or `relaton:` cannot silently turn off what it
+was meant to enable.
 
 ```yaml
 # Globs excluded from globbed-copy expansion and from `discover` scans.
@@ -263,6 +268,9 @@ A local copy `file` may be a glob (`docs/guides/*.md`); every matching file is
 checked with the same pattern. Files matching `ignore_paths` are excluded.
 A glob that matches no file (after exclusions) is reported as a stale manifest
 entry, not skipped. Globbing is not applied to cross-repo paths.
+A match that a symlink resolves outside the repo root is not read: it is
+reported as a stale manifest entry, and `fix` and `discover` skip it. Symlinks
+that stay inside the repo work as before.
 
 ### Guards: superseded and restated values
 
@@ -375,6 +383,13 @@ the checkout's branch and short SHA, and prints a warning when it is on a
 non-default branch or has uncommitted changes. This prevents a parked feature
 branch from masquerading as the state of the repository.
 
+The sibling's own git configuration is not trusted. Every git command
+ssot-check runs ignores the system config, turns off fsmonitor, hooks and
+automatic maintenance, and blanks any filter or diff driver the repo defines, so
+the repo's config cannot make a read run a command. With its clean filters off, a file
+those filters handle (git-lfs, say) can look modified when it is not, so a
+checkout whose only changes are to such files is labelled "possibly dirty".
+
 **With `--fetch`**, and if the sibling is a git repo, `ssot-check` runs
 `git fetch` there and compares against its remote-tracking ref
 (`branch@{upstream}`, else `origin/HEAD`) via `git show`. Be clear about the
@@ -391,6 +406,9 @@ The report labels each cross-repo value with its ref and tip date — e.g.
 remote), the value still comes from whatever refs were on disk and is labelled
 `fetch failed; local mirror may be stale`, so a stale mirror can't pass as a
 fresh one.
+The fetch uses the sibling's remote and transport settings (URL, ssh command,
+credential helper, proxy), so only use `--fetch` on repos whose config you
+trust.
 
 Local divergence between the sibling's working tree and its remote-tracking ref
 is reported, not fixed. If the value can't be established — the file is
@@ -408,19 +426,97 @@ bare / single-quoted (`''` escapes a quote) / double-quoted scalars, folded
 (`>`) and literal (`|`) block scalars, and quote-aware comments (full-line and
 trailing `# …`).
 
-**Not supported** (avoid in `.ssot.yaml`): flow collections (`{a: 1}`, `[1, 2]`),
+The empty flow forms `[]` and `{}` are read as an empty list and mapping.
+
+**Not supported** (avoid in `.ssot.yaml`): other flow collections (`{a: 1}`, `[1, 2]`),
 anchors/aliases (`&`/`*`), explicit tags (`!!str`), multiple documents (`---`),
 sequence items on the same line as their key, and tab indentation (use spaces).
 `validate` reports a friendly error with a line number when the manifest strays
 outside the subset.
+
+## Fix
+
+`check` finds drift; `fix` repairs the simple cases. It rewrites each drifted
+copy with its canonical value, and nothing else:
+
+```bash
+python3 ssot_check.py fix            # print a diff; change nothing
+python3 ssot_check.py fix --write    # apply it, then re-check
+```
+
+Only the captured value changes, written the way the copy writes numbers:
+canonical `1268` replaces `1,100+` as `1,268+`, and `$2,200.00` stays
+two-decimal. Line endings and the rest of the file are kept. `fix` refuses,
+and lists under **NOT FIXED**, every copy it cannot rewrite with certainty:
+
+- a copy in another repo (fix it there);
+- a `relation: floor` copy (a person picks the round number) or a `rounding`
+  copy (its script writes it);
+- a `json` copy, or a `date` fact;
+- a **canonical suspect**: a monotonic copy higher than its canonical, where
+  the canonical is probably the stale side;
+- a pattern that matches more than once in the file, or two facts whose
+  edits overlap.
+
+Exit codes: `0` when nothing is drifted, or when `--write` fixed everything;
+`1` when a dry run would change something, or when anything was refused or is
+still drifted after the write; `2` for a manifest error. Review the diff
+before `--write`, and commit the result like any other edit.
+
+## Pointers
+
+A value that changes should live in one file; everywhere else points to it
+instead of copying it. `pointers` checks that every pointer still points
+somewhere:
+
+```bash
+python3 ssot_check.py pointers --root .
+```
+
+A pointer is a marker (default `⏳`, set with `--marker`) followed by its
+target. These forms are recognized:
+
+| Form | Example |
+|---|---|
+| label, colon, target | ``⏳ weekly cap: `finance/benefits.md` `` |
+| bold label | ``⏳ **Current gate:** `finance/plan.md` `` |
+| bare target (table cells) | ``\| ⏳ `investing/config.yaml` \|`` |
+| link target | `⏳ status: [the plan](career/plan.md)` |
+| parenthesized | ``⏳ downloads (`analytics/goals.md`)`` |
+| another repo | ``⏳ goals: `~/cot-production/goals.md` ``, `` `prod:goals.md` ``, ``prod `goals.md` `` |
+
+A pointer may wrap onto the next line. A target resolves, first match wins,
+from the repo root, then the pointing file's directory, then another repo:
+`~/repo/path`, `repo:path`, `repo/path`, or a repo name written just before
+the target. Other repos are found the same way as
+[named repos](#named-repos) (`--repo`, `$SSOT_REPO_<NAME>`,
+`$SSOT_REPOS_DIR`, the manifest's `repos:`, then `../<name>`). A `#heading`
+or `:line` suffix is stripped and not checked.
+
+- **MISSING** — the target exists nowhere it could resolve. Exits `1`.
+- **REPO NOT FOUND** — the target is in another repo that is not checked
+  out. Exits `1`.
+- **MALFORMED** — a marker that is not followed by a target, such as
+  `⏳ pointer.` or ``⏳ Open: the `branch` ``. A word before the target counts
+  as a repo only if that repo is found or declared in the manifest. These
+  are reported but exit `0` unless you pass `--strict`, because the marker
+  is often used as a "pending" sign in logs.
+
+Markers inside inline code or fenced blocks are documentation about the
+convention and are skipped, as are placeholder targets (`<owner>`) and URLs,
+which are a link checker's job. When the root has a `.ssot.yaml`, its
+`ignore_paths` and `guard_skip_marker` apply; `--ignore` and `--skip-marker`
+add to them. Only Markdown, text and reST files are scanned unless you pass
+`--path`. `--json` gives machine-readable output.
 
 ## Skill wrapper
 
 [`SKILL.md`](SKILL.md) is a thin, model-invocable [agent skill](https://code.claude.com/docs/en/skills)
 around the CLI. The CLI does the deterministic work; the skill adds judgment —
 helping a human curate a manifest from `discover` output and interpreting a
-`check` report. The CLI never edits docs or the manifest; the only state it can
-change is a sibling repo's remote-tracking refs, under `--fetch`.
+`check` report. The CLI never edits the manifest or a canonical. It edits
+docs only under `fix --write`, and only drifted local copies; the only other
+state it can change is a sibling repo's remote-tracking refs, under `--fetch`.
 For audit-only requests, the skill proposes fixes. An explicit request to fix
 the docs or manifest authorizes scoped, reviewable edits; it does not change the
 CLI's read-only behavior or authorize unrelated external actions.
@@ -428,15 +524,37 @@ CLI's read-only behavior or authorize unrelated external actions.
 The skill also supports **pointers**, an agent workflow for disconnected setup
 guides and cross-repo ownership. It traces the reader's entry point to the
 maintained guide, checks checkout/worktree context, and separates configuration
-from verified service access. This is not a CLI subcommand or a new guarantee
-from a green `check`. See [the pointer audit](references/pointer-audit.md).
+from verified service access. See [the pointer audit](references/pointer-audit.md).
+The `pointers` subcommand is a narrower, deterministic part of that job: it
+checks that each marked pointer's target exists. A clean run does not show
+that a reader can find the guide, or that the guide is current.
 
 Install the whole repository into the skill directory so its references and CLI
 remain available. Keep an installed copy separate from the source checkout.
 
 ## Pre-commit hook
 
-[`hooks/pre-commit`](hooks/pre-commit) runs `check` before each commit.
+With the [pre-commit](https://pre-commit.com) framework, add this to the
+repository's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/conorbronsdon/ssot-check
+    rev: v0.2.0
+    hooks:
+      - id: ssot-check            # check, on every commit
+      - id: ssot-check-validate   # validate, when .ssot.yaml changes
+```
+
+Both hooks run the stdlib script directly; nothing is installed. `ssot-check`
+runs on every commit, because drift can come from any file. Pass extra
+options with `args:`, for example `args: [--repo, site=../site]`.
+The hooks ship from v0.2.0. They run `ssot_check.py` through its
+`#!/usr/bin/env python3` line, so `python3` must be on `PATH`; on Windows, a
+python.org install may provide only `python` or `py`.
+
+Without the framework, [`hooks/pre-commit`](hooks/pre-commit) runs `check`
+before each commit.
 
 ```bash
 cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit

@@ -18,6 +18,7 @@ parser (see parse_manifest); the supported subset is documented in README.md.
 """
 
 import argparse
+import difflib
 import fnmatch
 import json
 import os
@@ -33,6 +34,19 @@ VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
 VALID_RELATIONS = {"equal", "floor"}
 FLOOR_TYPES = {"integer", "currency"}
+
+# The keys the manifest accepts at each level, as in schema/ssot.schema.json
+# (every object there sets additionalProperties: false). A misspelled key is
+# otherwise silently ignored, which turns off what it was meant to enable.
+MANIFEST_KEYS = {"facts", "guard_skip_marker", "ignore_paths", "repos"}
+REPO_KEYS = {"path"}
+FACT_KEYS = {"name", "type", "monotonic", "note", "freshness", "canonical",
+             "copies", "guard"}
+FRESHNESS_KEYS = {"owner", "max_age_days"}
+LOCATOR_KEYS = {"file", "pattern", "json", "repo"}
+COPY_KEYS = LOCATOR_KEYS | {"rounding", "relation", "max_gap_pct", "note"}
+GUARD_KEYS = {"anchors", "superseded", "restated", "also_current", "paths",
+              "exempt"}
 CURRENCY_SYMBOLS = "$€£¥"
 
 # File extensions discover scans (prose only — code/data are out of scope here).
@@ -80,25 +94,87 @@ def _strip_comment(line):
 
     A `#` only starts a comment when it is at line start or preceded by
     whitespace and not inside quotes. Leading indentation is preserved.
+    A quote only opens a quoted scalar where one can start: at the start of
+    the line, or after whitespace that follows a key's ':' or a '- '. An
+    apostrophe inside a plain value ("it's") is plain text. Inside double
+    quotes a backslash escapes the next character; inside single quotes
+    '' is an escaped quote.
     """
     out = []
     quote = None
-    prev = ""
-    for ch in line:
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
         if quote:
             out.append(ch)
-            if ch == quote:
-                quote = None
+            if quote == '"' and ch == "\\" and i + 1 < n:
+                out.append(line[i + 1])
+                i += 1
+            elif ch == quote:
+                if quote == "'" and line[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 1
+                else:
+                    quote = None
+        elif ch in "'\"" and _starts_scalar("".join(out)):
+            quote = ch
+            out.append(ch)
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            break
         else:
-            if ch in "'\"":
-                quote = ch
-                out.append(ch)
-            elif ch == "#" and (prev == "" or prev in " \t"):
-                break
-            else:
-                out.append(ch)
-        prev = ch
+            out.append(ch)
+        i += 1
     return "".join(out).rstrip()
+
+
+def _reject_flow(scalar, lineno):
+    """Reject unquoted values that real YAML would read as something other
+    than text: flow collections (`{a: 1}`, `[a, b]`), anchors and aliases,
+    tags, and a sequence started on its key's line. Reading them as strings
+    would silently change their meaning, so stop with a clear error."""
+    s = scalar.strip()
+    if (s.startswith("{") and s.endswith("}")) or \
+            (s.startswith("[") and s.endswith("]")):
+        kind = "mapping {...}" if s[0] == "{" else "list [...]"
+        how = ("write one 'key: value' per line, indented under the key"
+               if s[0] == "{" else "write one '- item' per line, indented "
+               "under the key")
+        raise ManifestError(f"flow-style {kind} is not supported: {how}. "
+                            "To keep it as text (a regex, say), put it in "
+                            "single quotes", lineno)
+    quote_hint = "; put it in single quotes to keep it as text"
+    if s[:1] in ("&", "*"):
+        raise ManifestError("anchors and aliases (&name, *name) are not "
+                            "supported" + quote_hint + " (a glob that starts "
+                            "with '*', such as '*.lock', needs quotes)",
+                            lineno)
+    if s[:1] == "!":
+        raise ManifestError("explicit tags (!tag) are not supported" +
+                            quote_hint, lineno)
+    if s == "-" or s.startswith("- "):
+        raise ManifestError("a sequence item cannot start on its key's line: "
+                            "put each '- item' on its own line, indented "
+                            "under the key" + quote_hint, lineno)
+
+
+def _scalar(text, lineno):
+    """A value on a key or sequence line: `[]` and `{}` are the empty list
+    and mapping, as in YAML; other flow collections are rejected."""
+    s = text.strip()
+    if s == "[]":
+        return []
+    if s == "{}":
+        return LineDict()
+    _reject_flow(s, lineno)
+    return _unquote(s)
+
+
+def _starts_scalar(prefix):
+    """True when a quote after `prefix` would begin a scalar."""
+    head = prefix.rstrip(" \t")
+    if head.strip() == "":
+        return True
+    return head != prefix and head[-1] in ":-"
 
 
 def _unquote(scalar):
@@ -131,7 +207,7 @@ class _Parser:
             return None
         s = _strip_comment(self.raw[self.pos])
         indent = len(s) - len(s.lstrip(" "))
-        if "\t" in s[:indent]:
+        if "\t" in s[:len(s) - len(s.lstrip(" \t"))]:
             raise ManifestError("tab in indentation (use spaces)", self.pos + 1)
         return (self.pos + 1, indent, s.strip())
 
@@ -188,7 +264,7 @@ class _Parser:
                 else:
                     d[key] = None
             else:
-                d[key] = _unquote(valpart)
+                d[key] = _scalar(valpart, lineno)
         return d
 
     def parse_seq(self, indent):
@@ -222,7 +298,7 @@ class _Parser:
                 items.append(self.parse_map(map_indent))
             else:
                 self.pos += 1
-                items.append(_unquote(after))
+                items.append(_scalar(after, lineno))
         return items
 
     def parse_block_scalar(self, key_indent, style):
@@ -263,6 +339,10 @@ class _Parser:
 
 def parse_manifest(text):
     """Parse manifest text into nested LineDict/list/str. Raises ManifestError."""
+    # A UTF-8 byte order mark (written by some Windows editors) would
+    # otherwise become part of the first key.
+    if text.startswith("\ufeff"):
+        text = text[1:]
     parser = _Parser(text)
     result = parser.parse()
     if result is None:
@@ -334,6 +414,44 @@ def _non_string_values(manifest, line_of):
     return errors
 
 
+def _unknown_keys(manifest, line_of):
+    """Report keys the schema does not define, naming the closest valid key."""
+    errors = []
+
+    def check(node, allowed, where):
+        if not isinstance(node, dict):
+            return
+        for key in node:
+            if key in allowed:
+                continue
+            close = difflib.get_close_matches(str(key), sorted(allowed), n=1)
+            hint = f" (did you mean {close[0]!r}?)" if close else ""
+            ln = line_of(node, key)
+            msg = (f"{where}: unknown key {key!r}{hint}; allowed: "
+                   f"{', '.join(sorted(allowed))}")
+            errors.append(f"line {ln}: {msg}" if ln else msg)
+
+    check(manifest, MANIFEST_KEYS, "manifest")
+    repos = manifest.get("repos")
+    if isinstance(repos, dict):
+        for rname, rdef in repos.items():
+            check(rdef, REPO_KEYS, f"repos.{rname}")
+    facts = manifest.get("facts")
+    for i, fact in enumerate(facts if isinstance(facts, list) else []):
+        if not isinstance(fact, dict):
+            continue
+        name = fact.get("name") if isinstance(fact.get("name"), str) and \
+            fact.get("name") else f"facts[{i}]"
+        check(fact, FACT_KEYS, name)
+        check(fact.get("freshness"), FRESHNESS_KEYS, f"{name}.freshness")
+        check(fact.get("canonical"), LOCATOR_KEYS, f"{name}.canonical")
+        check(fact.get("guard"), GUARD_KEYS, f"{name}.guard")
+        copies = fact.get("copies")
+        for j, cp in enumerate(copies if isinstance(copies, list) else []):
+            check(cp, COPY_KEYS, f"{name}.copies[{j}]")
+    return errors
+
+
 def validate_manifest(manifest):
     """Return a list of human-readable error strings ([] means valid)."""
     errors = []
@@ -354,6 +472,8 @@ def validate_manifest(manifest):
     shape_errors = _non_string_values(manifest, line_of)
     if shape_errors:
         return shape_errors
+
+    errors.extend(_unknown_keys(manifest, line_of))
 
     ignore = manifest.get("ignore_paths")
     if ignore is not None and not isinstance(ignore, list):
@@ -747,7 +867,10 @@ def extract_json(content, path):
     """Return (value, line, error). The line is approximate: where the last
     named key first appears."""
     try:
-        node = json.loads(content)
+        # json.loads rejects a leading UTF-8 byte order mark, which some
+        # Windows tools write. Dropping it keeps line numbers unchanged.
+        node = json.loads(content[1:] if content.startswith("\ufeff")
+                          else content)
     except ValueError as exc:
         return None, None, f"not valid JSON ({exc.__class__.__name__})"
     segs = parse_json_path(path)
@@ -840,20 +963,41 @@ def _matches_any_glob(relpath, globs):
     return False
 
 
-def _expand_copy_files(root, relpath, ignore_paths):
+def _inside(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different Windows drives
+        return False
+
+
+def _expand_copy_files(root, relpath, ignore_paths, escaped=None):
     """Expand a possibly-globbed copy path into concrete relative paths.
 
     A glob that matches no checkable file yields the glob itself, so the
     copy is reported as a missing file (stale entry) instead of vanishing
     from the check and letting the fact pass as in sync.
+
+    A match that a symlink resolves outside the repo root is never returned;
+    it is appended to `escaped` (when given) so `check` can report it.
     """
     if any(ch in relpath for ch in "*?[") and not is_cross_repo(root, relpath):
         import glob as _glob
         hits = sorted(_glob.glob(_resolve(root, relpath), recursive=True))
-        rels = [os.path.relpath(h, root).replace(os.sep, "/")
-                for h in hits if os.path.isfile(h)]
-        rels = [r for r in rels if not _matches_any_glob(r, ignore_paths)]
-        return rels or [relpath]
+        real_root = os.path.realpath(root)
+        rels, outside = [], []
+        for h in hits:
+            if not os.path.isfile(h):
+                continue
+            rel = os.path.relpath(h, root).replace(os.sep, "/")
+            if _matches_any_glob(rel, ignore_paths):
+                continue
+            if _inside(os.path.realpath(h), real_root):
+                rels.append(rel)
+            else:
+                outside.append(rel)
+        if escaped is not None:
+            escaped.extend(outside)
+        return rels or ([] if outside else [relpath])
     return [relpath]
 
 
@@ -869,10 +1013,68 @@ def _read_file(path):
 # Cross-repo sibling access. Never edits a sibling; `--fetch` updates its
 # remote-tracking refs and nothing else.
 # --------------------------------------------------------------------------- #
+# A sibling repo's local config is not trusted. These settings make git run
+# commands; every git call turns them off. Filter and diff drivers are named
+# per repo, so _git blanks whichever ones the repo's config defines.
+_GIT_SAFE_CONFIG = (
+    "core.fsmonitor=false",
+    f"core.hooksPath={os.devnull}",
+    "gc.auto=0",
+    "maintenance.auto=false",
+    "log.showSignature=false",
+    "protocol.ext.allow=never",
+)
+_GIT_DRIVER_KEYS = {
+    "filter": ("clean", "smudge", "process"),
+    "diff": ("textconv", "command"),
+}
+
+
+def _git_env():
+    return dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
+
+
+def _git_drivers(cwd):
+    """(section, name) of every filter and diff driver the repo's config
+    defines. Reading config runs nothing."""
+    try:
+        out = subprocess.run(
+            ["git", "config", "-z", "--name-only", "--get-regexp",
+             r"^(filter|diff)\."],
+            cwd=cwd, capture_output=True, text=True, timeout=30,
+            env=_git_env())
+        # -z: a driver name may contain whitespace.
+        names = out.stdout.split("\0") if out.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        names = []
+    drivers = set()
+    for name in names:
+        section, _, rest = name.partition(".")
+        driver = rest.rpartition(".")[0]
+        if section in _GIT_DRIVER_KEYS and driver:
+            drivers.add((section, driver))
+    return drivers
+
+
+def _git_safe_args(cwd):
+    """`-c` overrides that stop the repo's config from running commands."""
+    args = []
+    for item in _GIT_SAFE_CONFIG:
+        args += ["-c", item]
+    for section, driver in sorted(_git_drivers(cwd)):
+        for key in _GIT_DRIVER_KEYS[section]:
+            args += ["-c", f"{section}.{driver}.{key}="]
+        if section == "filter":
+            args += ["-c", f"filter.{driver}.required=false"]
+    return args
+
+
 def _git(args, cwd):
     try:
-        out = subprocess.run(["git"] + args, cwd=cwd,
-                             capture_output=True, text=True, timeout=30)
+        # surrogateescape: `-z` output carries raw, possibly non-UTF-8 paths.
+        out = subprocess.run(["git"] + _git_safe_args(cwd) + args, cwd=cwd,
+                             capture_output=True, text=True, timeout=30,
+                             errors="surrogateescape", env=_git_env())
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
@@ -907,6 +1109,25 @@ def _remote_tracking_ref(repo_root):
     return None
 
 
+def _only_filtered_changes(entries, repo_root):
+    """True when every `status -z` entry is an unstaged change to a file
+    that goes through one of the repo's clean filters. With those filters
+    off (see `_git_safe_args`), such a file can look modified when it is not
+    (git-lfs, say), so the change is unconfirmed."""
+    if any(not e.startswith(" M ") for e in entries):
+        return False
+    drivers = {d for sec, d in _git_drivers(repo_root) if sec == "filter"}
+    if not drivers:
+        return False
+    paths = [e[3:] for e in entries]
+    out = _git(["check-attr", "-z", "filter", "--"] + paths, repo_root)
+    if out is None:
+        return False
+    fields = out.split("\0")
+    values = fields[2::3][:len(paths)]
+    return len(values) == len(paths) and all(v in drivers for v in values)
+
+
 def _working_tree_source(abspath):
     """Describe the exact sibling checkout used for a local cross-repo read.
 
@@ -936,10 +1157,15 @@ def _working_tree_source(abspath):
 
     # --no-optional-locks: plain `status` refreshes stale stat data and
     # rewrites .git/index (taking index.lock); a label must not write.
-    status = _git(["--no-optional-locks", "status", "--porcelain",
-                   "--untracked-files=normal"], repo_root)
-    if status and status.strip():
-        warnings.append("dirty working tree")
+    status = _git(["--no-optional-locks", "status", "--porcelain", "-z",
+                   "--no-renames", "--untracked-files=normal"], repo_root)
+    entries = [e for e in (status or "").split("\0") if e]
+    if entries:
+        if _only_filtered_changes(entries, repo_root):
+            warnings.append("possibly dirty working tree (the repo's git "
+                            "filters were not run)")
+        else:
+            warnings.append("dirty working tree")
 
     warning = f"; WARNING: {'; '.join(warnings)}" if warnings else ""
     return f"local {branch} ({sha}{warning})"
@@ -1339,8 +1565,18 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
 
         fact_status = "in_sync"
         for cp in fact.get("copies") or []:
+            escaped = []
             concretes = ([cp["file"]] if cp.get("repo") else
-                         _expand_copy_files(root, cp["file"], ignore_paths))
+                         _expand_copy_files(root, cp["file"], ignore_paths,
+                                            escaped))
+            for rel in escaped:
+                fr["copies"].append({
+                    "file": rel, "cross_repo": False, "status": "stale_entry",
+                    "note": "glob match is a symlink that resolves outside "
+                            "the repo; not read"})
+                counts["stale_entry"] += 1
+                if fact_status == "in_sync":
+                    fact_status = "stale_entry"
             for concrete in concretes:
                 copy_rel = _rel_under_root(
                     root, _locate(root, concrete, cp.get("repo"), repos)[0])
@@ -1486,10 +1722,14 @@ _UNIT_RE = "|".join(sorted(set(UNIT_NOUNS), key=len, reverse=True))
 # Counted values carry their own unit noun in the match, so the unit is
 # read from the capture — never from a wide context window (which would
 # misattribute a nearby unrelated noun).
+# Both are linear on long runs (#25). `(?<![\d,])` starts a count only at the
+# head of a digit/comma run, so "1,1,1,..." is not retried from every digit;
+# `\s*(?:[:=]\s*)?` replaces `\s*[:=]?\s*`, which split a whitespace run
+# between two quantifiers and backtracked through it quadratically.
 _COUNTED_AFTER = re.compile(
-    r"\b(\d[\d,]{1,})\s?\+?\s*(" + _UNIT_RE + r")\b", re.I)
+    r"(?<![\d,])\b(\d[\d,]{1,})\s?\+?\s*(" + _UNIT_RE + r")\b", re.I)
 _COUNTED_BEFORE = re.compile(
-    r"\b(" + _UNIT_RE + r")\b\s*[:=]?\s*(\d[\d,]{1,})\+?", re.I)
+    r"\b(" + _UNIT_RE + r")\b\s*(?:[:=]\s*)?(\d[\d,]{1,})\+?", re.I)
 
 # Generic value-bearing patterns. Unit is not reliably inferable; left None.
 # Version is restricted to x.y.z style to avoid catching "99.9" from a percent.
@@ -1789,6 +2029,266 @@ def _suggest_name(unit, kind, value):
     if kind == "version":
         return "version-" + re.sub(r"[^0-9]", "", value)[:4]
     return "fact-" + re.sub(r"\D", "", value)[:6]
+
+
+# --------------------------------------------------------------------------- #
+# pointers. A pointer replaces a copied value with a reference to its owner:
+#   ⏳ <what>: `<file>`          or          ⏳ <what>: [label](<file>)
+# `pointers` finds every pointer marker in the repo's prose and checks that
+# its target exists. A target resolves, first match wins, from the repo root,
+# then the pointing file's directory, then another repo: `~/repo/path`,
+# `repo:path`, or `repo/path` whose first segment is a repo found the same way
+# `check` finds named repos. Fragments (`#heading`) and `:line` suffixes are
+# stripped and not checked.
+#
+#   MISSING          the target does not exist anywhere it could resolve
+#   REPO NOT FOUND   the target names another repo that is not checked out
+#   MALFORMED        a marker with no target; fails only with --strict
+#
+# Markers inside inline code or fenced blocks are documentation about the
+# convention, not pointers, and are skipped, as are placeholder targets
+# (`<owner>`) and URLs.
+# --------------------------------------------------------------------------- #
+POINTER_MARKER = "⏳"
+_PTR_TARGET = (r"(?:`(?P<code>[^`\n]+)`|\[[^\]\n]*\]\((?P<link>[^)\s]+)\)"
+               r"|(?P<url>https?://[^\s)]+))")
+_PTR_REPO = r"(?:(?P<repo>[A-Za-z0-9][A-Za-z0-9._-]*)[ \t]+)?"
+# What may follow the marker. Each form puts the target straight after the
+# marker, the colon, or an opening parenthesis; "⏳ Open: the `x` branch" is
+# not a pointer, and neither is "⏳ pointer." with no target at all.
+_PTR_FORMS = [
+    # ⏳ `file`   (a bare target, common in table cells)
+    re.compile(r"^[ \t]*[*_]*[ \t]*" + _PTR_TARGET),
+    # ⏳ <what>: `file`   ⏳ **<what>:** `file`   ⏳ <what>: repo `file`
+    re.compile(r"^(?P<what>[^:`\n]*?):[*_]*[ \t]*" + _PTR_REPO + _PTR_TARGET),
+    # ⏳ <what> (`file`)
+    re.compile(r"^(?P<what>[^:`(\n]*?)\([ \t]*" + _PTR_TARGET),
+]
+
+
+def _match_pointer(text):
+    for form in _PTR_FORMS:
+        m = form.match(text)
+        if m:
+            target = m.group("code") or m.group("link") or m.group("url")
+            repo = m.groupdict().get("repo")
+            return target, repo
+    return None
+
+
+_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def _code_spans(line):
+    """Return [(start, end)] of inline code spans on one line."""
+    spans, i = [], 0
+    while True:
+        a = line.find("`", i)
+        if a < 0:
+            return spans
+        run = len(line[a:]) - len(line[a:].lstrip("`"))
+        b = line.find("`" * run, a + run)
+        if b < 0:
+            return spans
+        spans.append((a, b + run))
+        i = b + run
+
+
+def _clean_target(raw):
+    t = raw.strip()
+    if " " in t:
+        t = t.split(" ", 1)[0]
+    t = t.split("#", 1)[0]
+    t = re.sub(r":\d+(?:-\d+)?$", "", t)
+    return t.rstrip(".,;")
+
+
+def find_pointers(text, marker=POINTER_MARKER):
+    """Yield (line, raw_target_or_None, repo_hint_or_None) per marker."""
+    lines = text.split("\n")
+    in_fence = False
+    for i, line in enumerate(lines):
+        if _FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        spans = _code_spans(line)
+        start = 0
+        while True:
+            pos = line.find(marker, start)
+            if pos < 0:
+                break
+            start = pos + len(marker)
+            if any(a <= pos < b for a, b in spans):
+                continue
+            nxt = line.find(marker, start)
+            rest = line[start:nxt] if nxt >= 0 else line[start:]
+            found = _match_pointer(rest)
+            if not found and nxt < 0 and i + 1 < len(lines) and \
+                    not _FENCE.match(lines[i + 1]) and \
+                    marker not in lines[i + 1]:
+                # A pointer wrapped onto the next line, anywhere in it.
+                found = _match_pointer(rest.rstrip() + " " +
+                                       lines[i + 1].strip())
+            if not found:
+                yield i + 1, None, None
+                continue
+            yield i + 1, found[0], found[1]
+
+
+def _pointer_repo(name, root, repos_cache, manifest, overrides, env):
+    if name not in repos_cache:
+        declared = dict(manifest.get("repos") or {}) if manifest else {}
+        synthetic = {"repos": {name: declared.get(name)}}
+        repos_cache[name] = resolve_repos(root, synthetic, overrides,
+                                          env)[name]
+    return repos_cache[name]
+
+
+def resolve_pointer(root, rel, target, manifest=None, overrides=None,
+                    env=None, repos_cache=None, repo_hint=None):
+    """Return (status, resolved_path_or_note).
+
+    repo_hint is a repo name written just before the target, as in
+    "cot-production `path`": the target is looked up in that repo. A hint
+    that is neither declared in the manifest's repos nor found on disk is
+    ordinary prose ("Open: the `branch`"), so the line is not a pointer.
+    """
+    repos_cache = {} if repos_cache is None else repos_cache
+    t = target.replace("\\", "/")
+    if repo_hint and not t.startswith("~/"):
+        info = _pointer_repo(repo_hint, root, repos_cache, manifest,
+                             overrides, env)
+        declared = repo_hint in ((manifest or {}).get("repos") or {}) or \
+            repo_hint in (overrides or {})
+        if not info.get("path") and not declared:
+            return "malformed", (f"{repo_hint!r} before the target is not a "
+                                 "known repo; the target must follow the "
+                                 "colon")
+        if not info.get("path"):
+            return "repo_missing", f"repo {repo_hint!r} not found (looked " \
+                                   f"in: {', '.join(info['looked'])})"
+        if os.path.exists(os.path.join(info["path"], t.lstrip("/"))):
+            return "ok", f"{repo_hint}:{t.lstrip('/')}"
+        return "missing", f"not found in repo {repo_hint!r} ({info['path']})"
+    candidates = []
+    repo_ref = None
+    if t.startswith("~/"):
+        name, _, sub = t[2:].partition("/")
+        repo_ref = (name, sub)
+    elif re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*:[^/\\]", t) and \
+            not re.match(r"^[A-Za-z]:", t):
+        name, _, sub = t.partition(":")
+        repo_ref = (name, sub)
+    else:
+        candidates.append(_resolve(root, t.lstrip("/")))
+        candidates.append(_resolve(os.path.join(root, os.path.dirname(rel)),
+                                   t))
+    for c in candidates:
+        if os.path.exists(c):
+            return "ok", os.path.relpath(c, root).replace(os.sep, "/")
+    if repo_ref is None and "/" in t:
+        # `repo/path`: try the first segment as another repo.
+        name, _, sub = t.partition("/")
+        info = _pointer_repo(name, root, repos_cache, manifest, overrides,
+                             env)
+        if info.get("path") and os.path.exists(os.path.join(info["path"],
+                                                            sub)):
+            return "ok", f"{name}:{sub}"
+        return "missing", "not found from the repo root or the file's " \
+                          "directory"
+    if repo_ref is None:
+        return "missing", "not found from the repo root or the file's " \
+                          "directory"
+    name, sub = repo_ref
+    info = _pointer_repo(name, root, repos_cache, manifest, overrides, env)
+    if not info.get("path"):
+        return "repo_missing", f"repo {name!r} not found (looked in: " \
+                               f"{', '.join(info['looked'])})"
+    if os.path.exists(os.path.join(info["path"], sub)):
+        return "ok", f"{name}:{sub}"
+    return "missing", f"not found in repo {name!r} ({info['path']})"
+
+
+def check_pointers(root, manifest=None, paths=None, ignore=None,
+                   marker=POINTER_MARKER, overrides=None, env=None,
+                   skip_marker=None):
+    paths = paths or GUARD_DEFAULT_PATHS
+    ignore = list(ignore or []) + list((manifest or {}).get("ignore_paths")
+                                       or [])
+    skip_marker = skip_marker or (manifest or {}).get("guard_skip_marker")
+    skip = re.compile(skip_marker, re.MULTILINE) if skip_marker else None
+    repos_cache = {}
+    results = []
+    counts = {"ok": 0, "missing": 0, "repo_missing": 0, "malformed": 0,
+              "skipped": 0}
+    files = 0
+    for rel in _repo_files(root):
+        if not any(_path_glob(rel, p) for p in paths):
+            continue
+        if any(_path_glob(rel, g) for g in ignore):
+            continue
+        text = _read_file(_resolve(root, rel))
+        if text is None or marker not in text:
+            continue
+        if skip and skip.search(text):
+            continue
+        files += 1
+        for line, raw, hint in find_pointers(text, marker):
+            entry = {"file": rel, "line": line, "target": raw}
+            if raw is None:
+                entry["status"] = "malformed"
+                entry["note"] = (f"not '{marker} <what>: `file`' (or "
+                                 "[label](file)); the target must follow "
+                                 "the colon")
+            else:
+                target = _clean_target(raw)
+                if not target or "<" in raw or ">" in raw or \
+                        "://" in target or target.startswith("mailto:"):
+                    entry["status"] = "skipped"
+                else:
+                    if hint:
+                        entry["repo"] = hint
+                    status, note = resolve_pointer(
+                        root, rel, target, manifest, overrides, env,
+                        repos_cache, hint)
+                    entry["status"] = status
+                    entry["resolved" if status == "ok" else "note"] = note
+            counts[entry["status"]] += 1
+            results.append(entry)
+    return {"version": __version__, "root": os.path.abspath(root),
+            "marker": marker, "files_with_pointers": files,
+            "pointers": results, "summary": counts}
+
+
+def render_pointers(result, strict=False):
+    s = result["summary"]
+    total = sum(v for k, v in s.items())
+    _print(f"SSOT POINTERS — {total} {result['marker']} markers in "
+           f"{result['files_with_pointers']} files")
+    _print("")
+    for status, title in (("missing", "MISSING"),
+                          ("repo_missing", "REPO NOT FOUND"),
+                          ("malformed", "MALFORMED" +
+                           ("" if strict else " (advisory; --strict fails)"))):
+        rows = [p for p in result["pointers"] if p["status"] == status]
+        if not rows:
+            continue
+        _print(f"{title} ({len(rows)}):")
+        for p in rows:
+            tgt = f" -> {p['target']}" if p.get("target") else ""
+            _print(f"  - {p['file']}:{p['line']}{tgt}: {p.get('note')}")
+        _print("")
+    _print(f"{s['ok']} resolve, {s['missing']} missing, "
+           f"{s['repo_missing']} repo not found, {s['malformed']} malformed, "
+           f"{s['skipped']} skipped (placeholders, URLs).")
+
+
+def pointers_exit_code(result, strict=False):
+    s = result["summary"]
+    bad = s["missing"] + s["repo_missing"] + (s["malformed"] if strict else 0)
+    return 1 if bad else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -2141,6 +2641,211 @@ def cmd_check(args):
     return result["exit_code"]
 
 
+# --------------------------------------------------------------------------- #
+# fix: rewrite drifted copies from their canonical value. The only command
+# that edits files, so it is narrow on purpose: a dry run (a diff) unless
+# --write; local copies with an exact relation and a regex locator only; and
+# it refuses anything where the canonical may be the stale side.
+# --------------------------------------------------------------------------- #
+FIXABLE_TYPES = {"string", "integer", "currency", "semver"}
+
+
+def _group_thousands(digits, sep):
+    neg = digits.startswith("-")
+    d = digits.lstrip("-")
+    out = []
+    while len(d) > 3:
+        out.insert(0, d[-3:])
+        d = d[:-3]
+    out.insert(0, d)
+    return ("-" if neg else "") + sep.join(out)
+
+
+def format_like(canonical, copy, ftype):
+    """Write the canonical value the way the copy writes its values.
+
+    '1268' into a copy written '1,100+' gives '1,268+'; '$1500' into '1,200'
+    gives '1,500'. Returns None when the value cannot be carried over.
+    """
+    plus = "+" if copy.strip().endswith("+") else ""
+    if ftype == "string":
+        return canonical.strip()
+    if ftype == "semver":
+        core = canonical.strip().lstrip("vV")
+        prefix = copy.strip()[:1] if copy.strip()[:1] in "vV" else ""
+        return prefix + core + plus
+    try:
+        norm = normalize_value(canonical, ftype)
+    except ValueError:
+        return None
+    body = _strip_trailing_plus(copy)
+    sep = ","
+    for cand in (",", "_", " "):
+        if re.search(r"\d" + re.escape(cand) + r"\d{3}", body):
+            sep = cand
+            break
+    else:
+        sep = ""
+    if ftype == "integer":
+        return (_group_thousands(norm, sep) if sep else norm) + plus
+    # currency
+    symbol = body[:1] if body[:1] in CURRENCY_SYMBOLS else ""
+    whole, _, frac = norm.partition(".")
+    m = re.search(r"\.(\d+)$", body)
+    if m and not frac:
+        frac = "0" * len(m.group(1))
+    text = (_group_thousands(whole, sep) if sep else whole)
+    return symbol + text + ("." + frac if frac else "") + plus
+
+
+def _read_raw(path):
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def plan_fixes(root, manifest, result):
+    """Return (edits, refusals). edits: {relpath: [(start, end, old, new,
+    fact)]}; refusals: [(fact, file, reason)] for drift fix will not touch."""
+    ignore_paths = manifest.get("ignore_paths") or []
+    by_name = {f["name"]: f for f in result["facts"]}
+    edits, refusals = {}, []
+    for fact in manifest["facts"]:
+        fr = by_name.get(fact["name"])
+        if not fr:
+            continue
+        ftype = fact.get("type", "string")
+        cval = fr["canonical"].get("value")
+        drifted = {c["file"]: c for c in fr["copies"]
+                   if c["status"] == "drifted"}
+        if not drifted:
+            continue
+        for cp in fact.get("copies") or []:
+            files = ([cp["file"]] if cp.get("repo") else
+                     _expand_copy_files(root, cp["file"], ignore_paths))
+            for rel in files:
+                res = drifted.get(f"{cp['repo']}:{rel}" if cp.get("repo")
+                                  else rel)
+                if res is None:
+                    continue
+                name, where = fact["name"], res["file"]
+                reason = None
+                if res.get("cross_repo"):
+                    reason = "in another repo; fix it there"
+                elif cp.get("relation") == "floor":
+                    reason = "a floor is written by a person; pick the " \
+                             "round number by hand"
+                elif cp.get("rounding"):
+                    reason = "a rounded copy is written by its own script"
+                elif cp.get("json") is not None:
+                    reason = "JSON copies are not rewritten"
+                elif res.get("direction") == "canonical_suspect":
+                    reason = "canonical suspect: the copy is higher, so " \
+                             "the canonical may be the stale side"
+                elif ftype not in FIXABLE_TYPES:
+                    reason = f"type {ftype} is not rewritten"
+                elif cval is None:
+                    reason = "no canonical value"
+                if reason:
+                    refusals.append((name, where, reason))
+                    continue
+                content = _read_raw(_resolve(root, rel))
+                if content is None:
+                    refusals.append((name, where, "unreadable"))
+                    continue
+                old, _, count, start, end = _extract_details(content,
+                                                             cp["pattern"])
+                if old is None:
+                    refusals.append((name, where, "pattern no longer "
+                                     "matches"))
+                    continue
+                if count > 1:
+                    refusals.append((name, where, f"pattern matches "
+                                     f"{count}x; fix by hand or tighten it"))
+                    continue
+                new = format_like(cval, old, ftype)
+                ok = new is not None and values_match(cval, new, ftype)[0]
+                if not ok:
+                    refusals.append((name, where, "could not write the "
+                                     "canonical in the copy's format"))
+                    continue
+                edits.setdefault(rel, []).append((start, end, old, new,
+                                                  name))
+    # Two facts editing overlapping text in one file cannot both be right.
+    for rel, items in list(edits.items()):
+        items.sort()
+        if any(a[1] > b[0] for a, b in zip(items, items[1:])):
+            for item in items:
+                refusals.append((item[4], rel, "overlaps another fact's "
+                                 "edit in the same file"))
+            del edits[rel]
+    return edits, refusals
+
+
+def apply_edits(content, items):
+    for start, end, _, new, _ in sorted(items, reverse=True):
+        content = content[:start] + new + content[end:]
+    return content
+
+
+def cmd_fix(args):
+    try:
+        manifest = load_manifest(args.manifest)
+    except ManifestError as exc:
+        return _fail_config(f"{args.manifest}: {exc}")
+    errors = validate_manifest(manifest)
+    if errors:
+        return _fail_config(f"manifest invalid; run validate ({errors[0]})")
+    root = args.root or os.path.dirname(os.path.abspath(args.manifest))
+    try:
+        overrides = _repo_overrides(args, manifest)
+    except ManifestError as exc:
+        return _fail_config(str(exc))
+    result = check(root, manifest, repo_overrides=overrides,
+                   manifest_path=args.manifest)
+    edits, refusals = plan_fixes(root, manifest, result)
+    import difflib
+    for rel in sorted(edits):
+        before = _read_raw(_resolve(root, rel))
+        after = apply_edits(before, edits[rel])
+        sys.stdout.writelines(difflib.unified_diff(
+            before.splitlines(True), after.splitlines(True),
+            fromfile=f"a/{rel}", tofile=f"b/{rel}"))
+        if args.write:
+            with open(_resolve(root, rel), "w", encoding="utf-8",
+                      newline="") as fh:
+                fh.write(after)
+    n = sum(len(v) for v in edits.values())
+    if refusals:
+        _print("")
+        _print(f"NOT FIXED ({len(refusals)}):")
+        for name, where, reason in refusals:
+            _print(f"  - {name} — {where}: {reason}")
+    _print("")
+    if not n:
+        _print("Nothing to fix." if not refusals else
+               "Nothing fix can rewrite safely.")
+        return 1 if refusals else 0
+    if not args.write:
+        _print(f"{n} cop{'y' if n == 1 else 'ies'} in {len(edits)} "
+               f"file{'' if len(edits) == 1 else 's'} would change. "
+               "Re-run with --write to apply.")
+        return 1
+    after = check(root, manifest, repo_overrides=overrides,
+                  manifest_path=args.manifest)
+    still, _ = plan_fixes(root, manifest, after)
+    fixed_files = set(edits)
+    remaining = [c for f in after["facts"] for c in f["copies"]
+                 if c["status"] == "drifted" and c["file"] in fixed_files]
+    _print(f"Rewrote {n} cop{'y' if n == 1 else 'ies'} in {len(edits)} "
+           f"file{'' if len(edits) == 1 else 's'}; re-check: "
+           + ("all rewritten copies in sync." if not remaining and not still
+              else f"{len(remaining)} still drifted."))
+    return 1 if (remaining or refusals) else 0
+
+
 def cmd_discover(args):
     # The annotation text states that an occurrence is not covered by the
     # manifest, which is only established by the --untracked-only pass.
@@ -2233,6 +2938,45 @@ def cmd_explain(args):
     return 0
 
 
+def cmd_pointers(args):
+    manifest = None
+    mpath = args.manifest
+    if mpath is None and os.path.isfile(os.path.join(args.root or ".",
+                                                     ".ssot.yaml")):
+        mpath = os.path.join(args.root or ".", ".ssot.yaml")
+    if mpath is not None:
+        try:
+            manifest = load_manifest(mpath)
+        except ManifestError as exc:
+            return _fail_config(f"{mpath}: {exc}")
+        errors = validate_manifest(manifest)
+        if errors:
+            return _fail_config(f"manifest invalid; run validate "
+                                f"({errors[0]})")
+    root = args.root or (os.path.dirname(os.path.abspath(mpath)) if mpath
+                         else ".")
+    overrides = {}
+    for item in args.repo or []:
+        name, sep, path = item.partition("=")
+        if not sep or not name or not path:
+            return _fail_config(f"--repo expects NAME=PATH, got {item!r}")
+        overrides[name] = path
+    try:
+        if args.skip_marker:
+            re.compile(args.skip_marker)
+    except re.error as exc:
+        return _fail_config(f"--skip-marker: invalid regex ({exc})")
+    result = check_pointers(root, manifest, paths=args.path,
+                            ignore=args.ignore, marker=args.marker,
+                            overrides=overrides,
+                            skip_marker=args.skip_marker)
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        render_pointers(result, strict=args.strict)
+    return pointers_exit_code(result, strict=args.strict)
+
+
 def _add_repo(sp):
     sp.add_argument("--repo", action="append", metavar="NAME=PATH",
                     help="where a named repo (manifest 'repos:') is checked "
@@ -2300,6 +3044,41 @@ def build_parser():
     _add_fetch(e)
     _add_repo(e)
     e.set_defaults(func=cmd_explain)
+
+    fx = sub.add_parser("fix", help="rewrite drifted local copies from the "
+                                    "canonical (dry run unless --write)")
+    add_common(fx)
+    fx.add_argument("--write", action="store_true",
+                    help="apply the changes; without it, only print a diff")
+    _add_repo(fx)
+    fx.set_defaults(func=cmd_fix)
+    pt = sub.add_parser("pointers",
+                        help="check that every pointer marker's target "
+                             "exists")
+    pt.add_argument("--root", default=None,
+                    help="tree to scan (default: the manifest's directory, "
+                         "or .)")
+    pt.add_argument("-f", "--manifest", default=None,
+                    help="manifest whose ignore_paths and repos apply "
+                         "(default: <root>/.ssot.yaml when present)")
+    pt.add_argument("--marker", default=POINTER_MARKER,
+                    help=f"pointer marker (default: {POINTER_MARKER})")
+    pt.add_argument("--path", action="append",
+                    help="glob of files to scan; repeatable (default: "
+                         "Markdown, text and reST)")
+    pt.add_argument("--ignore", action="append",
+                    help="glob or dir/ prefix to skip; repeatable")
+    pt.add_argument("--repo", action="append", metavar="NAME=PATH",
+                    help="where another repo named by a pointer is checked "
+                         "out; repeatable")
+    pt.add_argument("--skip-marker", default=None,
+                    help="regex; files matching it are skipped (default: "
+                         "the manifest's guard_skip_marker)")
+    pt.add_argument("--strict", action="store_true",
+                    help="also fail on markers with no target")
+    pt.add_argument("--json", action="store_true",
+                    help="machine-readable output")
+    pt.set_defaults(func=cmd_pointers)
     return p
 
 
@@ -2309,7 +3088,7 @@ def main(argv=None):
     # Default subcommand is `check`. Global options (--version, -h/--help) are
     # owned by the top-level parser and must not be swept into the default
     # subcommand — doing so routed `--version` to `check`, which rejected it.
-    known = {"check", "validate", "discover", "explain"}
+    known = {"check", "validate", "discover", "explain", "fix", "pointers"}
     global_opts = {"-h", "--help", "--version"}
     if argv and argv[0] in global_opts:
         pass

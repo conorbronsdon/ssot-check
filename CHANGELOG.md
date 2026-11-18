@@ -35,9 +35,58 @@ The project is no longer in maintenance mode; new features are being added.
   canonical and, with `max_gap_pct`, within that percentage of it. Floors may
   use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
   **DRIFTED (floor lagging)**.
+- **`fix` subcommand.** Rewrites drifted local copies with their canonical
+  value, written in the copy's format (separators, currency symbol, decimals,
+  `v` prefix, trailing `+`). Prints a diff unless `--write`, then re-checks.
+  Refuses, with a reason, copies in other repos, floors, rounded and JSON
+  copies, dates, canonical suspects, and ambiguous or overlapping matches.
+  The only command that edits files.
+- **`pointers` subcommand.** Finds every pointer marker (default `⏳`) in the
+  repo's prose and checks that its target exists, resolving from the repo
+  root, the pointing file's directory, or another repo (`~/repo/path`,
+  `repo:path`, `repo/path`, or a repo name before the target). **MISSING** and
+  **REPO NOT FOUND** exit `1`; a marker with no target is **MALFORMED**,
+  advisory unless `--strict`. Markers in code, placeholder targets and URLs
+  are skipped; the manifest's `ignore_paths` and `guard_skip_marker` apply.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
+- **pre-commit hooks.** `.pre-commit-hooks.yaml` defines `ssot-check` (runs
+  `check` on every commit) and `ssot-check-validate` (runs `validate` when
+  `.ssot.yaml` changes). Both run the stdlib script; nothing is installed.
+
+### Changed
+
+- **The manifest parser rejects YAML it cannot read correctly.** Unquoted
+  flow collections (`{a: 1}`, `[a, b]`), anchors and aliases (`&x`, `*x`),
+  tags (`!!str`) and a sequence item on its key's line used to be read as
+  plain strings, which silently changed their meaning. They now fail with
+  the line number and the fix. An unquoted regex that is entirely
+  bracketed, such as `[abc]`, must now be quoted, as in real YAML. So must
+  an unquoted value that starts with `*`, `&` or `!`: a glob such as
+  `- *.lock` in `ignore_paths` or `exempt`, `file: *.md`, or a negated
+  `!vendor/**`. Real YAML reads those as an alias, an anchor or a tag; write
+  `- '*.lock'`. The empty forms `[]` and `{}` now parse as an empty list and
+  mapping.
+
+### Fixed
+
+- **Cross-repo reads ignore the sibling repo's config-driven commands.** git
+  runs with the system config off, fsmonitor, hooks and automatic maintenance
+  disabled, and the repo's filter and diff drivers blanked. A checkout whose only
+  changes are to filtered files is labelled "possibly dirty".
+- **Copy globs don't follow a symlink out of the repo.** Such a match is a
+  stale manifest entry. `fix` and `discover` skip it, and in-repo symlinks
+  still work.
+- **`discover` no longer stalls on long digit/comma runs or long whitespace
+  runs.** A 20 KB `data-points="1,1,1,…"` attribute took about 30 s, and a unit
+  noun followed by 20 K spaces took about 2 s; both now finish in milliseconds.
+  A count now starts only at the head of a digit run, so a mid-token tail such
+  as the `000 users` in `a1,000 users` is no longer proposed (#25).
+- `hooks/pre-commit` no longer passes quietly in strict mode. With
+  `SSOT_STRICT=1`, a missing CLI or an `SSOT_MANIFEST` that does not exist
+  aborts the commit (exit 2), and a manifest error is reported as one rather
+  than as drift. Non-strict behaviour is unchanged (#26).
 
 ## [0.1.4] — 2026-11-16
 
