@@ -10,6 +10,9 @@ Subcommands:
   validate   structural check of the manifest against the documented schema
   discover   heuristic proposal mode — scan prose for drift-prone facts
   explain    show one fact's canonical value and all copies
+  fix        rewrite drifted local copies from the canonical value
+  fleet      check several repos, one combined report and exit code
+  pointers   check that every pointer marker's target exists
 
 Exit codes (check): 0 in sync, 1 drift/staleness found, 2 config/manifest error.
 
@@ -2651,7 +2654,11 @@ def fleet(entries, fetch=False, repo_overrides=None, env=None, today=None):
     results = []
     for entry in entries:
         root = os.path.abspath(os.path.expanduser(entry["path"]))
-        mpath = os.path.join(root, entry.get("manifest") or ".ssot.yaml")
+        # A manifest path is relative to the repo unless it is absolute or
+        # starts with ~, and the check runs from the manifest's directory,
+        # as `check -f PATH` does.
+        mname = os.path.expanduser(entry.get("manifest") or ".ssot.yaml")
+        mpath = mname if os.path.isabs(mname) else os.path.join(root, mname)
         row = {"repo": os.path.basename(root.rstrip(os.sep)) or root,
                "root": root, "manifest": mpath}
         if not os.path.isdir(root):
@@ -2677,7 +2684,8 @@ def fleet(entries, fetch=False, repo_overrides=None, env=None, today=None):
                 declared = manifest.get("repos") or {}
                 mine = {n: p for n, p in repo_overrides.items()
                         if n in declared}
-                res = check(root, manifest, fetch=fetch, today=today,
+                res = check(os.path.dirname(mpath), manifest, fetch=fetch,
+                            today=today,
                             repo_overrides=mine, env=env,
                             manifest_path=mpath)
                 row.update(status="ok" if res["exit_code"] == 0

@@ -205,6 +205,24 @@ class FleetTests(unittest.TestCase):
                                  2)
             self.assertIn("did you mean 'manifest'", err.getvalue())
 
+    def test_a_named_manifest_resolves_from_its_own_directory(self):
+        # As `check -f config/ssot.yaml` does: file paths in the manifest are
+        # relative to config/, not to the repo top.
+        with tempfile.TemporaryDirectory() as parent:
+            repo = make_repo(parent, "r", manifest=None)
+            m = MANIFEST.replace("file: a.md", "file: ../a.md") \
+                        .replace("file: b.md", "file: ../b.md")
+            write(os.path.join(repo, "config", "ssot.yaml"), m)
+            r = sc.fleet([{"path": repo, "manifest": "config/ssot.yaml",
+                           "explicit": True}], env={})
+            self.assertEqual(r["exit_code"], 0, r)
+            self.assertEqual(r["summary"]["ok"], 1)
+            # an absolute manifest path is used as given
+            r = sc.fleet([{"path": repo, "explicit": True,
+                           "manifest": os.path.join(repo, "config",
+                                                    "ssot.yaml")}], env={})
+            self.assertEqual(r["exit_code"], 0, r)
+
     def test_repo_flag_does_not_hide_a_manifest_error(self):
         with tempfile.TemporaryDirectory() as parent:
             bad = make_repo(parent, "bad", manifest="facts: 3\n")

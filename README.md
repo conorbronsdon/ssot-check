@@ -474,7 +474,9 @@ python3 ssot_check.py fleet --fleet fleet.yaml
 
 Each repo is checked exactly as `check` would check it from its own root.
 A fleet file lists the repos, relative to the file, with an optional
-manifest path for a repo whose manifest is not `.ssot.yaml` at its root:
+manifest path for a repo whose manifest is not `.ssot.yaml` at its root. The
+manifest path is relative to the repo unless it is absolute or starts with `~`,
+and that repo is checked from the manifest's directory, as `check -f` would:
 
 ```yaml
 repos:
