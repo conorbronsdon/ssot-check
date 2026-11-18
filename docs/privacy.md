@@ -19,8 +19,12 @@ data, or protected health information.
 
 The agent skill can read documentation and propose changes. When you request
 repairs, the agent can edit the relevant documents using its host's tools. The
-CLI itself does not edit documents or manifests. It prints results to your
-terminal or calling process and does not maintain its own audit database.
+CLI itself does not edit documents or manifests, with one opt-in exception:
+`fix --write` rewrites drifted copied values in local files that the manifest
+names as copies. Without `--write`, `fix` only prints a diff. It never edits
+the manifest, a canonical, or a file in another repository. The CLI prints
+results to your terminal or calling process and does not maintain its own
+audit database.
 
 ## Recipients and network access
 

@@ -16,4 +16,6 @@ plugin root in both Codex and Claude Code; a skill-directory variable set for
 this adapter points here, not at the root. Use the absolute path to the root's
 `ssot_check.py`, with a Python 3 interpreter. Preserve the approval
 boundary for edits and the opt-in boundary for `--fetch`. The `pointers` mode is
-an agent workflow, not a CLI subcommand; read its reference from the plugin root.
+an agent workflow: start it with the root's `ssot_check.py pointers` subcommand,
+which only checks that marked pointer targets exist, then follow its reference
+from the plugin root for the rest.
