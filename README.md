@@ -60,6 +60,7 @@ python3 ssot_check.py <command> [options]
   discover   propose drift-prone facts from prose (writes nothing)
   explain    show one fact's canonical value and all copies
   fix        rewrite drifted local copies from the canonical (diff; --write applies)
+  fleet      check several repos, one combined report and exit code
   pointers   check that every pointer marker's target file exists
 ```
 
@@ -70,8 +71,8 @@ Common options (`check`, `validate`, `explain`):
 | `-f, --manifest PATH` | Manifest path (default `.ssot.yaml`). |
 | `--root DIR` | Repo root for relative paths (default: the manifest's directory). |
 | `--json` | Machine-readable output (`check`, `discover`, `explain`). |
-| `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`. |
-| `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`. |
+| `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`/`fleet`. |
+| `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`/`fleet`. |
 
 `discover` takes `--root DIR`, repeatable `--ignore GLOB`, and `--json`. With
 `--manifest PATH --untracked-only`, it suppresses occurrences already covered
@@ -462,6 +463,43 @@ Exit codes: `0` when nothing is drifted, or when `--write` fixed everything;
 `1` when a dry run would change something, or when anything was refused or is
 still drifted after the write; `2` for a manifest error. Review the diff
 before `--write`, and commit the result like any other edit.
+
+## Fleet
+
+When several repositories each keep a `.ssot.yaml`, `fleet` checks them all
+and reports once:
+
+```bash
+python3 ssot_check.py fleet ~/site ~/docs ~/marketing
+python3 ssot_check.py fleet --fleet fleet.yaml
+```
+
+Each repo is checked exactly as `check` would check it from its own root.
+A fleet file lists the repos, relative to the file, with an optional
+manifest path for a repo whose manifest is not `.ssot.yaml` at its root. The
+manifest path is relative to the repo unless it is absolute or starts with `~`,
+and that repo is checked from the manifest's directory, as `check -f` would:
+
+```yaml
+repos:
+  - ../site
+  - path: ../docs
+    manifest: config/ssot.yaml
+```
+
+The report gives one line per repo, then the full `check` output for each repo
+with problems. The exit code is the worst case: `2` if any manifest is
+invalid, `1` if any repo has problems or its directory is missing, else `0`. A
+repo without a `.ssot.yaml` is listed as skipped and does not fail the run, but
+a manifest the fleet file names must exist (`2` if it does not), a fleet file
+key other than `repos`, `path` and `manifest` is an error, and a run in which
+every repo was skipped exits `2`: nothing was checked. The skip is deliberate:
+a listed repo whose `.ssot.yaml` is removed is skipped too, and the run still
+exits `0` when another repo was checked. To make a repo's manifest required,
+name it in the fleet file (`manifest: .ssot.yaml`); a named manifest that is
+missing exits `2`.
+`--repo NAME=PATH` applies to every manifest that declares `NAME`, and is a
+configuration error if none does. `--fetch` and `--json` work as for `check`.
 
 ## Pointers
 
