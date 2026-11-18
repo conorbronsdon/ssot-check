@@ -21,8 +21,12 @@ the user's task when no mode was supplied.
 - **discover**: propose drift-prone facts for a new or expanded manifest.
 - **explain NAME**: inspect one fact's canonical value and copies.
 - **pointers**: trace documentation ownership and access routes using
-  [the pointer audit](references/pointer-audit.md). This is an agent workflow,
-  not a `ssot_check.py` subcommand. Use it even when there are no copied numbers.
+  [the pointer audit](references/pointer-audit.md). This is an agent workflow.
+  Use it even when there are no copied numbers. Start it by running
+  `python3 "$SKILL_DIR/ssot_check.py" pointers --root "$TARGET_REPO"`, which
+  deterministically reports marked pointers (`⏳ what: \`file\``) whose
+  target is MISSING or whose repo is not checked out. A clean run covers only
+  that; the route, ownership and access questions remain yours.
 
 The CLI performs deterministic extraction and comparison. It does not check
 whether a reader can find a setup guide, whether a linked service works, or
@@ -31,10 +35,17 @@ establishes none of those things. A mixed request can need both modes.
 
 ## Execution and authorization
 
-The CLI never edits docs, manifests, or working trees. Its only opt-in mutation
-is `check --fetch` / `explain --fetch`, which runs `git fetch` in sibling repos
-and updates their remote-tracking refs, `FETCH_HEAD`, and object store. It does
-not pull, rebase, reset, or move their working trees or local branches.
+The CLI never edits manifests, canonicals, or other repos. It has two opt-in
+mutations. `fix --write` rewrites drifted local copies with their canonical
+value (`fix` without `--write` only prints the diff). `check --fetch` /
+`explain --fetch` runs `git fetch` in sibling repos and updates their
+remote-tracking refs, `FETCH_HEAD`, and object store; it does not pull,
+rebase, reset, or move their working trees or local branches.
+
+For an audit-only request, `fix` (no `--write`) is a useful way to show the
+proposed edits. Use `--write` only when the user asked for fixes, then read
+the diff and its NOT FIXED list: every refusal (a floor, a canonical suspect,
+another repo, an ambiguous pattern) needs judgment, not a retry.
 
 For an audit-only request, report proposed fixes. When the user explicitly asks
 to fix the docs or manifest, apply reviewable edits within that authorized scope
