@@ -427,7 +427,9 @@ bare / single-quoted (`''` escapes a quote) / double-quoted scalars, folded
 (`>`) and literal (`|`) block scalars, and quote-aware comments (full-line and
 trailing `# …`).
 
-**Not supported** (avoid in `.ssot.yaml`): flow collections (`{a: 1}`, `[1, 2]`),
+The empty flow forms `[]` and `{}` are read as an empty list and mapping.
+
+**Not supported** (avoid in `.ssot.yaml`): other flow collections (`{a: 1}`, `[1, 2]`),
 anchors/aliases (`&`/`*`), explicit tags (`!!str`), multiple documents (`---`),
 sequence items on the same line as their key, and tab indentation (use spaces).
 `validate` reports a friendly error with a line number when the manifest strays
@@ -566,7 +568,27 @@ remain available. Keep an installed copy separate from the source checkout.
 
 ## Pre-commit hook
 
-[`hooks/pre-commit`](hooks/pre-commit) runs `check` before each commit.
+With the [pre-commit](https://pre-commit.com) framework, add this to the
+repository's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/conorbronsdon/ssot-check
+    rev: v0.2.0
+    hooks:
+      - id: ssot-check            # check, on every commit
+      - id: ssot-check-validate   # validate, when .ssot.yaml changes
+```
+
+Both hooks run the stdlib script directly; nothing is installed. `ssot-check`
+runs on every commit, because drift can come from any file. Pass extra
+options with `args:`, for example `args: [--repo, site=../site]`.
+The hooks ship from v0.2.0. They run `ssot_check.py` through its
+`#!/usr/bin/env python3` line, so `python3` must be on `PATH`; on Windows, a
+python.org install may provide only `python` or `py`.
+
+Without the framework, [`hooks/pre-commit`](hooks/pre-commit) runs `check`
+before each commit.
 
 ```bash
 cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit

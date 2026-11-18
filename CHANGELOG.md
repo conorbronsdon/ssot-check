@@ -56,6 +56,23 @@ The project is no longer in maintenance mode; new features are being added.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
+- **pre-commit hooks.** `.pre-commit-hooks.yaml` defines `ssot-check` (runs
+  `check` on every commit) and `ssot-check-validate` (runs `validate` when
+  `.ssot.yaml` changes). Both run the stdlib script; nothing is installed.
+
+### Changed
+
+- **The manifest parser rejects YAML it cannot read correctly.** Unquoted
+  flow collections (`{a: 1}`, `[a, b]`), anchors and aliases (`&x`, `*x`),
+  tags (`!!str`) and a sequence item on its key's line used to be read as
+  plain strings, which silently changed their meaning. They now fail with
+  the line number and the fix. An unquoted regex that is entirely
+  bracketed, such as `[abc]`, must now be quoted, as in real YAML. So must
+  an unquoted value that starts with `*`, `&` or `!`: a glob such as
+  `- *.lock` in `ignore_paths` or `exempt`, `file: *.md`, or a negated
+  `!vendor/**`. Real YAML reads those as an alias, an anchor or a tag; write
+  `- '*.lock'`. The empty forms `[]` and `{}` now parse as an empty list and
+  mapping.
 
 ### Fixed
 
@@ -71,6 +88,10 @@ The project is no longer in maintenance mode; new features are being added.
   noun followed by 20 K spaces took about 2 s; both now finish in milliseconds.
   A count now starts only at the head of a digit run, so a mid-token tail such
   as the `000 users` in `a1,000 users` is no longer proposed (#25).
+- `hooks/pre-commit` no longer passes quietly in strict mode. With
+  `SSOT_STRICT=1`, a missing CLI or an `SSOT_MANIFEST` that does not exist
+  aborts the commit (exit 2), and a manifest error is reported as one rather
+  than as drift. Non-strict behaviour is unchanged (#26).
 
 ## [0.1.4] — 2026-11-16
 
