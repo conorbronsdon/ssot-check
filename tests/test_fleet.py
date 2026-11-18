@@ -229,6 +229,17 @@ class FleetTests(unittest.TestCase):
                                                     "ssot.yaml")}], env={})
             self.assertEqual(r["exit_code"], 0, r)
 
+    def test_repo_flag_does_not_hide_a_missing_repo(self):
+        with tempfile.TemporaryDirectory() as parent:
+            a = make_repo(parent, "a")
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch("sys.stdout", out), \
+                    unittest.mock.patch("sys.stderr", err):
+                self.assertEqual(sc.main(["fleet", a, os.path.join(parent, "gone"),
+                                          "--repo", "brand=/x"]), 1)
+            self.assertNotIn("no manifest declares", err.getvalue())
+            self.assertIn("MISSING", out.getvalue())
+
     def test_repo_flag_does_not_hide_a_manifest_error(self):
         with tempfile.TemporaryDirectory() as parent:
             bad = make_repo(parent, "bad", manifest="facts: 3\n")

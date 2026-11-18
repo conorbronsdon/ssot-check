@@ -70,7 +70,7 @@ Common options (`check`, `validate`, `explain`):
 |--------|---------|
 | `-f, --manifest PATH` | Manifest path (default `.ssot.yaml`). |
 | `--root DIR` | Repo root for relative paths (default: the manifest's directory). |
-| `--json` | Machine-readable output (`check`, `discover`, `explain`). |
+| `--json` | Machine-readable output (`check`, `discover`, `explain`, `fleet`). |
 | `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`/`fleet`. |
 | `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`/`fleet`. |
 
@@ -499,7 +499,8 @@ exits `0` when another repo was checked. To make a repo's manifest required,
 name it in the fleet file (`manifest: .ssot.yaml`); a named manifest that is
 missing exits `2`.
 `--repo NAME=PATH` applies to every manifest that declares `NAME`, and is a
-configuration error if none does. `--fetch` and `--json` work as for `check`.
+configuration error if none does (unless a repo could not be read, which is
+reported instead). `--fetch` and `--json` work as for `check`.
 
 ## Pointers
 
