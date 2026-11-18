@@ -6,7 +6,7 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
-## [0.2.0] — 2026-11-17
+## [0.2.0] — 2026-11-18
 
 The project is no longer in maintenance mode; new features are being added.
 
