@@ -102,7 +102,10 @@ class FleetTests(unittest.TestCase):
             r = sc.fleet(entries, env={})
             self.assertEqual(r["summary"]["ok"], 2, r)
             for bad in ("repos: []\n", "facts: []\n", "repos:\n  - path:\n"
-                        "      x: 1\n"):
+                        "      x: 1\n",
+                        # misspelled keys must not fall back to defaults
+                        "repos:\n  - path: b/docs\n    manifst: ssot.yaml\n",
+                        "repos:\n  - a\nrepo:\n  - b\n"):
                 write(fpath, bad)
                 with self.subTest(bad=bad), \
                         self.assertRaises(sc.ManifestError):
@@ -178,6 +181,29 @@ class FleetTests(unittest.TestCase):
             a = make_repo(parent, "a")
             self.assertEqual(sc.fleet([{"path": a}, {"path": p1}],
                                       env={})["exit_code"], 0)
+
+    def test_cli_fleet_file_and_repo_acceptance(self):
+        with tempfile.TemporaryDirectory() as parent:
+            m = MANIFEST.replace("      - file: b.md\n",
+                                 "      - repo: site\n        file: b.md\n")
+            make_repo(parent, "a", manifest=m)
+            site = os.path.join(parent, "elsewhere")
+            write(os.path.join(site, "b.md"), "Only 4\n")
+            fpath = os.path.join(parent, "fleet.yaml")
+            write(fpath, "repos:\n  - a\n")
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch("sys.stdout", out), \
+                    unittest.mock.patch("sys.stderr", err):
+                # an accepted --repo through the CLI resolves the sibling
+                self.assertEqual(sc.main(["fleet", "--fleet", fpath, "--repo",
+                                          f"site={site}"]), 0)
+                self.assertEqual(sc.main(["fleet", "--fleet", fpath]), 1)
+                write(fpath, "repos:\n  - path: a\n    manifst: x.yaml\n")
+                self.assertEqual(sc.main(["fleet", "--fleet", fpath]), 2)
+                self.assertEqual(sc.main(["fleet", "--fleet",
+                                          os.path.join(parent, "none.yaml")]),
+                                 2)
+            self.assertIn("did you mean 'manifest'", err.getvalue())
 
     def test_repo_flag_does_not_hide_a_manifest_error(self):
         with tempfile.TemporaryDirectory() as parent:

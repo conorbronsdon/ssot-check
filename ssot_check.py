@@ -2608,6 +2608,12 @@ def load_fleet_file(path):
     """Read a fleet file: `repos:` as a list of paths relative to the file,
     or of {path, manifest} mappings. Raises ManifestError."""
     data = load_manifest(path)
+    # A misspelled key would otherwise be ignored: `manifst:` would fall back
+    # to .ssot.yaml and the repo would be skipped instead of checked.
+    for key in data:
+        if key != "repos":
+            raise ManifestError(f"{path}: unknown key {key!r}; a fleet file "
+                                "has only 'repos:'")
     entries = data.get("repos")
     if not isinstance(entries, list) or not entries:
         raise ManifestError(f"{path}: needs a non-empty 'repos:' list")
@@ -2620,6 +2626,13 @@ def load_fleet_file(path):
                                                         str):
             raise ManifestError(f"{path}: repos[{i}] must be a path or a "
                                 "{path, manifest} mapping")
+        for key in item:
+            if key not in ("path", "manifest"):
+                close = difflib.get_close_matches(str(key),
+                                                  ["path", "manifest"], n=1)
+                hint = f" (did you mean {close[0]!r}?)" if close else ""
+                raise ManifestError(f"{path}: repos[{i}]: unknown key "
+                                    f"{key!r}{hint}; allowed: manifest, path")
         manifest = item.get("manifest", ".ssot.yaml")
         if not isinstance(manifest, str):
             raise ManifestError(f"{path}: repos[{i}].manifest must be a "

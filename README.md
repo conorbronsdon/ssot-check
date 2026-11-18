@@ -71,8 +71,8 @@ Common options (`check`, `validate`, `explain`):
 | `-f, --manifest PATH` | Manifest path (default `.ssot.yaml`). |
 | `--root DIR` | Repo root for relative paths (default: the manifest's directory). |
 | `--json` | Machine-readable output (`check`, `discover`, `explain`). |
-| `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`. |
-| `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`. |
+| `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`/`fleet`. |
+| `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`/`fleet`. |
 
 `discover` takes `--root DIR`, repeatable `--ignore GLOB`, and `--json`. With
 `--manifest PATH --untracked-only`, it suppresses occurrences already covered
@@ -487,8 +487,9 @@ The report gives one line per repo, then the full `check` output for each repo
 with problems. The exit code is the worst case: `2` if any manifest is
 invalid, `1` if any repo has problems or its directory is missing, else `0`. A
 repo without a `.ssot.yaml` is listed as skipped and does not fail the run, but
-a manifest the fleet file names must exist (`2` if it does not), and a run in
-which every repo was skipped exits `2`: nothing was checked.
+a manifest the fleet file names must exist (`2` if it does not), a fleet file
+key other than `repos`, `path` and `manifest` is an error, and a run in which
+every repo was skipped exits `2`: nothing was checked.
 `--repo NAME=PATH` applies to every manifest that declares `NAME`, and is a
 configuration error if none does. `--fetch` and `--json` work as for `check`.
 
