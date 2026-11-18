@@ -60,8 +60,12 @@ The project is no longer in maintenance mode; new features are being added.
   tags (`!!str`) and a sequence item on its key's line used to be read as
   plain strings, which silently changed their meaning. They now fail with
   the line number and the fix. An unquoted regex that is entirely
-  bracketed, such as `[abc]`, must now be quoted, as in real YAML. The empty
-  forms `[]` and `{}` now parse as an empty list and mapping.
+  bracketed, such as `[abc]`, must now be quoted, as in real YAML. So must
+  an unquoted value that starts with `*`, `&` or `!`: a glob such as
+  `- *.lock` in `ignore_paths` or `exempt`, `file: *.md`, or a negated
+  `!vendor/**`. Real YAML reads those as an alias, an anchor or a tag; write
+  `- '*.lock'`. The empty forms `[]` and `{}` now parse as an empty list and
+  mapping.
 
 ### Fixed
 

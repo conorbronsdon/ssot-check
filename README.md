@@ -549,6 +549,9 @@ repos:
 Both hooks run the stdlib script directly; nothing is installed. `ssot-check`
 runs on every commit, because drift can come from any file. Pass extra
 options with `args:`, for example `args: [--repo, site=../site]`.
+The hooks ship from v0.2.0. They run `ssot_check.py` through its
+`#!/usr/bin/env python3` line, so `python3` must be on `PATH`; on Windows, a
+python.org install may provide only `python` or `py`.
 
 Without the framework, [`hooks/pre-commit`](hooks/pre-commit) runs `check`
 before each commit.

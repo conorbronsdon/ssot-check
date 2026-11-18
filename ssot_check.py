@@ -145,7 +145,9 @@ def _reject_flow(scalar, lineno):
     quote_hint = "; put it in single quotes to keep it as text"
     if s[:1] in ("&", "*"):
         raise ManifestError("anchors and aliases (&name, *name) are not "
-                            "supported" + quote_hint, lineno)
+                            "supported" + quote_hint + " (a glob that starts "
+                            "with '*', such as '*.lock', needs quotes)",
+                            lineno)
     if s[:1] == "!":
         raise ManifestError("explicit tags (!tag) are not supported" +
                             quote_hint, lineno)

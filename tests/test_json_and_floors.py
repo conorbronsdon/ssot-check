@@ -318,15 +318,17 @@ class FlowYamlTests(unittest.TestCase):
                              ("a: *x\n", "aliases"),
                              ("a: !!str 1\n", "tags"),
                              ("a: - 1\n", "own line"),
-                             ("a:\n  - *x\n", "aliases")):
+                             ("a:\n  - *x\n", "aliases"),
+                             ("ignore_paths:\n  - *.lock\n", "needs quotes")):
             with self.subTest(text=text):
                 with self.assertRaises(sc.ManifestError) as ctx:
                     self.parse(text)
                 self.assertIn(needle, str(ctx.exception))
         # Complement: the same characters quoted, or later in a value, parse.
-        m = self.parse("a: '*x'\nb: 'x & y'\nc: x - y\nd: '- 1'\n")
-        self.assertEqual((m["a"], m["b"], m["c"], m["d"]),
-                         ("*x", "x & y", "x - y", "- 1"))
+        m = self.parse("a: '*x'\nb: 'x & y'\nc: x - y\nd: '- 1'\n"
+                       "e:\n  - '*.lock'\n")
+        self.assertEqual((m["a"], m["b"], m["c"], m["d"], m["e"]),
+                         ("*x", "x & y", "x - y", "- 1", ["*.lock"]))
 
     def test_empty_flow_and_regex_lookalikes_still_parse(self):
         m = self.parse("""\

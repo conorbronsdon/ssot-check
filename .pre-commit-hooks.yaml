@@ -7,6 +7,9 @@
 #       - id: ssot-check
 #
 # The hooks are stdlib Python with no install step. They read files only.
+# They run ssot_check.py through its `#!/usr/bin/env python3` line, so
+# `python3` must be on PATH (on Windows, a python.org install may provide
+# only `python`/`py`). Available from the v0.2.0 release.
 - id: ssot-check
   name: ssot-check (copied-fact drift)
   description: Verify every copy in .ssot.yaml against its canonical value.
@@ -22,4 +25,5 @@
   entry: ssot_check.py validate
   language: script
   pass_filenames: false
-  files: '(^|/)\.ssot\.ya?ml$'
+  # validate reads ./.ssot.yaml, so run it when that file changes.
+  files: '^\.ssot\.yaml$'
