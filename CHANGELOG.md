@@ -64,6 +64,10 @@ The project is no longer in maintenance mode; new features are being added.
   noun followed by 20 K spaces took about 2 s; both now finish in milliseconds.
   A count now starts only at the head of a digit run, so a mid-token tail such
   as the `000 users` in `a1,000 users` is no longer proposed (#25).
+- `hooks/pre-commit` no longer passes quietly in strict mode. With
+  `SSOT_STRICT=1`, a missing CLI or an `SSOT_MANIFEST` that does not exist
+  aborts the commit (exit 2), and a manifest error is reported as one rather
+  than as drift. Non-strict behaviour is unchanged (#26).
 
 ## [0.1.4] — 2026-11-16
 
