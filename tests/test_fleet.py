@@ -167,6 +167,12 @@ class FleetTests(unittest.TestCase):
             r = sc.fleet(sc.load_fleet_file(fpath), env={})
             self.assertEqual(r["exit_code"], 0)
             self.assertEqual(r["repos"][1]["status"], "no_manifest")
+            # naming the default makes it required (README: Fleet)
+            write(fpath, "repos:\n  - a\n  - path: cfg\n"
+                         "    manifest: .ssot.yaml\n")
+            r = sc.fleet(sc.load_fleet_file(fpath), env={})
+            self.assertEqual(r["exit_code"], 2)
+            self.assertEqual(r["repos"][1]["status"], "config_error")
 
     def test_a_fleet_that_checks_nothing_fails(self):
         with tempfile.TemporaryDirectory() as parent:

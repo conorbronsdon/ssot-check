@@ -493,7 +493,11 @@ invalid, `1` if any repo has problems or its directory is missing, else `0`. A
 repo without a `.ssot.yaml` is listed as skipped and does not fail the run, but
 a manifest the fleet file names must exist (`2` if it does not), a fleet file
 key other than `repos`, `path` and `manifest` is an error, and a run in which
-every repo was skipped exits `2`: nothing was checked.
+every repo was skipped exits `2`: nothing was checked. The skip is deliberate:
+a listed repo whose `.ssot.yaml` is removed is skipped too, and the run still
+exits `0` when another repo was checked. To make a repo's manifest required,
+name it in the fleet file (`manifest: .ssot.yaml`); a named manifest that is
+missing exits `2`.
 `--repo NAME=PATH` applies to every manifest that declares `NAME`, and is a
 configuration error if none does. `--fetch` and `--json` work as for `check`.
 
