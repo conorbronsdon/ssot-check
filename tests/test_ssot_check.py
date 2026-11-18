@@ -777,6 +777,246 @@ class CrossRepoFetchTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+@unittest.skipUnless(has_git() and os.name != "nt", "needs git and sh")
+class SiblingGitConfigTests(unittest.TestCase):
+    """The sibling repo's own git config is not trusted: commands it names
+    must not run when ssot-check labels or reads that repo."""
+
+    def _arm(self, sib, marker):
+        """Configure commands in the sibling that leave `marker.*` behind.
+
+        They fire only with SSOT_PROBE set, so a git process started by
+        something else on the machine (an editor scanning temp dirs) can't
+        leave a marker."""
+        write(os.path.join(sib, ".gitattributes"), "*.html filter=probe\n")
+        probe = '[ -z "$SSOT_PROBE" ] || touch'
+        with open(os.path.join(sib, ".git", "config"), "a",
+                  encoding="utf-8") as fh:
+            fh.write(textwrap.dedent(f"""\
+                [core]
+                \tfsmonitor = "{probe} '{marker}.fsmonitor'; false"
+                [filter "probe"]
+                \tclean = "{probe} '{marker}.clean'; cat"
+                \tprocess = "{probe} '{marker}.process'"
+                \trequired = true
+                """))
+        # Stat data that no longer matches the index makes status rehash
+        # page.html, which is where a configured filter would run.
+        os.utime(os.path.join(sib, "page.html"), (1_000_000, 1_000_000))
+
+    def setUp(self):
+        probe = unittest.mock.patch.dict(os.environ, {"SSOT_PROBE": "1"})
+        probe.start()
+        self.addCleanup(probe.stop)
+
+    def _ran(self, parent):
+        return sorted(n for n in os.listdir(parent) if n.startswith("ran."))
+
+    def test_control_plain_git_runs_the_configured_commands(self):
+        """Must-fire control: the fixture really does run commands under
+        plain git, so the assertions below are not vacuous."""
+        with tempfile.TemporaryDirectory() as parent:
+            _, sib = CrossRepoFetchTests._fixture(self, parent)
+            self._arm(sib, os.path.join(parent, "ran"))
+            subprocess.run(["git", "--no-optional-locks", "status",
+                            "--porcelain"], cwd=sib, capture_output=True)
+            self.assertNotEqual(self._ran(parent), [])
+
+    def test_default_read_runs_no_sibling_configured_command(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            self._arm(sib, os.path.join(parent, "ran"))
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertEqual(self._ran(parent), [])
+            # Must-still-fire: the checkout is still labelled from git.
+            self.assertEqual(copy["value"], "99")
+            self.assertIn("local old-feature (", copy["source"])
+            self.assertIn("non-default branch; default is origin/main",
+                          copy["source"])
+            self.assertIn("; dirty working tree", copy["source"])
+
+    def test_really_dirty_sibling_without_filters_is_labelled_dirty(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertIn("; dirty working tree", copy["source"])
+            self.assertNotIn("possibly", copy["source"])
+
+    def test_non_utf8_filename_in_sibling_is_labelled_not_crashed(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            try:
+                with open(os.path.join(os.fsencode(sib), b"caf\xe9.html"),
+                          "wb") as fh:
+                    fh.write(b"x\n")
+            except OSError:  # pragma: no cover - filesystem rejects it
+                self.skipTest("filesystem needs UTF-8 names")
+            git(sib, "checkout", "--quiet", "--", "page.html")
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertEqual(copy["value"], "49")
+            self.assertIn("; dirty working tree", copy["source"])
+
+    def test_driver_name_with_whitespace_is_blanked_too(self):
+        for name in ("pro be", "pro\u00a0be", "pro\tbe"):
+            with self.subTest(name=repr(name)), \
+                    tempfile.TemporaryDirectory() as parent:
+                repo, sib = CrossRepoFetchTests._fixture(self, parent)
+                marker = os.path.join(parent, "ran")
+                write(os.path.join(sib, ".gitattributes"),
+                      f"*.html filter={name}\n" if " " not in name else
+                      "*.html filter=unused\n")
+                probe = '[ -z "$SSOT_PROBE" ] || touch'
+                with open(os.path.join(sib, ".git", "config"), "a",
+                          encoding="utf-8") as fh:
+                    fh.write(f'[filter "{name}"]\n'
+                             f'\tclean = "{probe} \'{marker}.clean\'; cat"\n')
+                os.utime(os.path.join(sib, "page.html"),
+                         (1_000_000, 1_000_000))
+                self.assertIn(("filter", name), sc._git_drivers(sib))
+                args = sc._git_safe_args(sib)
+                self.assertIn(f"filter.{name}.clean=", args)
+                sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST))
+                self.assertEqual(self._ran(parent), [])
+
+    def test_clean_filtered_checkout_is_not_called_dirty(self):
+        """A transforming clean filter that is switched off must not turn an
+        untouched checkout into a confident "dirty working tree"."""
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            git(sib, "checkout", "--quiet", "--", "page.html")
+            write(os.path.join(sib, ".gitattributes"), "*.html filter=up\n")
+            git(sib, "add", ".gitattributes")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "-c", "filter.up.clean=tr a-z A-Z",
+                "commit", "--quiet", "-m", "attrs")
+            git(sib, "-c", "filter.up.clean=tr a-z A-Z",
+                "add", "--renormalize", ".")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "-c", "filter.up.clean=tr a-z A-Z",
+                "commit", "--quiet", "-m", "renorm")
+            with open(os.path.join(sib, ".git", "config"), "a",
+                      encoding="utf-8") as fh:
+                fh.write('[filter "up"]\n\tclean = tr a-z A-Z\n')
+            os.utime(os.path.join(sib, "page.html"), (1_000_000, 1_000_000))
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertEqual(copy["value"], "49")
+            self.assertNotIn("; dirty working tree", copy["source"])
+            self.assertIn("possibly dirty working tree", copy["source"])
+
+    def test_fetch_runs_no_sibling_configured_command(self):
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            self._arm(sib, os.path.join(parent, "ran"))
+            copy = sc.check(repo, sc.parse_manifest(CROSS_REPO_MANIFEST),
+                            fetch=True)["facts"][0]["copies"][0]
+            self.assertEqual(self._ran(parent), [])
+            self.assertEqual(copy["value"], "49")
+            self.assertIn("origin/main", copy["source"])
+            self.assertNotIn("fetch failed", copy["source"])
+
+    def test_clean_sibling_is_not_labelled_dirty(self):
+        """Must-not-fire: blanking the filters must not make an untouched
+        checkout look dirty."""
+        with tempfile.TemporaryDirectory() as parent:
+            repo, sib = CrossRepoFetchTests._fixture(self, parent)
+            git(sib, "checkout", "--quiet", "--", "page.html")
+            write(os.path.join(sib, ".gitattributes"), "*.html filter=probe\n")
+            git(sib, "add", ".gitattributes")
+            git(sib, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "--quiet", "-m", "attrs")
+            self._arm(sib, os.path.join(parent, "ran"))
+            copy = sc.check(repo, sc.parse_manifest(
+                CROSS_REPO_MANIFEST))["facts"][0]["copies"][0]
+            self.assertEqual(self._ran(parent), [])
+            self.assertEqual(copy["value"], "49")
+            self.assertNotIn("dirty working tree", copy["source"])
+
+
+def _can_symlink():
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            os.symlink(tmp, os.path.join(tmp, "link"))
+            return True
+        except (OSError, NotImplementedError):  # pragma: no cover
+            return False
+
+
+GLOB_MANIFEST = textwrap.dedent("""\
+    facts:
+      - name: episode-count
+        type: integer
+        canonical:
+          file: index.md
+          pattern: 'Total Episodes: (\\d+)'
+        copies:
+          - file: 'docs/*.md'
+            pattern: '(\\d+) episodes shipped'
+    """)
+
+
+@unittest.skipUnless(_can_symlink(), "symlinks not available")
+class GlobSymlinkTests(unittest.TestCase):
+    """A copy glob must not reach outside the manifest's repo through a
+    symlink. Symlinks that stay inside the repo keep working."""
+
+    def _fixture(self, parent):
+        root = os.path.join(parent, "repo")
+        write(os.path.join(root, "index.md"), "Total Episodes: 62\n")
+        write(os.path.join(root, "docs", "a.md"), "62 episodes shipped\n")
+        outside = os.path.join(parent, "outside")
+        write(os.path.join(outside, "secret.md"), "61 episodes shipped\n")
+        return root, outside
+
+    def test_symlink_out_of_the_repo_is_a_stale_entry_and_not_read(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root, outside = self._fixture(parent)
+            os.symlink(os.path.join(outside, "secret.md"),
+                       os.path.join(root, "docs", "leak.md"))
+            os.symlink(outside, os.path.join(root, "docs", "dir"))
+            m = sc.parse_manifest(GLOB_MANIFEST.replace(
+                "docs/*.md", "docs/**/*.md"))
+            result = sc.check(root, m)
+            copies = {c["file"]: c for c in result["facts"][0]["copies"]}
+            self.assertEqual(copies["docs/a.md"]["status"], "in_sync")
+            for rel in ("docs/leak.md", "docs/dir/secret.md"):
+                self.assertEqual(copies[rel]["status"], "stale_entry", rel)
+                self.assertIn("outside the repo", copies[rel]["note"])
+                self.assertNotIn("value", copies[rel])
+            self.assertEqual(result["exit_code"], 1)
+            self.assertNotIn("61", json.dumps(result))
+
+    def test_fix_and_discover_skip_a_symlink_out_of_the_repo(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root, outside = self._fixture(parent)
+            os.symlink(os.path.join(outside, "secret.md"),
+                       os.path.join(root, "docs", "leak.md"))
+            m = sc.parse_manifest(GLOB_MANIFEST)
+            plan = sc.plan_fixes(root, m, sc.check(root, m))
+            self.assertNotIn("leak.md", json.dumps(plan, default=str))
+            found = sc._manifest_occurrences(root, m)
+            self.assertNotIn("leak.md", json.dumps(found, default=str))
+            with open(os.path.join(outside, "secret.md"),
+                      encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "61 episodes shipped\n")
+
+    def test_symlink_inside_the_repo_still_checks(self):
+        """Must-not-fire: a repo that links its own docs keeps working."""
+        with tempfile.TemporaryDirectory() as parent:
+            root, _ = self._fixture(parent)
+            write(os.path.join(root, "shared", "b.md"), "60 episodes shipped\n")
+            os.symlink(os.path.join(root, "shared", "b.md"),
+                       os.path.join(root, "docs", "b.md"))
+            result = sc.check(root, sc.parse_manifest(GLOB_MANIFEST))
+            copies = {c["file"]: c["status"]
+                      for c in result["facts"][0]["copies"]}
+            self.assertEqual(copies, {"docs/a.md": "in_sync",
+                                      "docs/b.md": "drifted"})
+
+
 class FreshnessTests(unittest.TestCase):
     def test_skips_without_git(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1396,6 +1636,118 @@ class CLIExitCodeTests(unittest.TestCase):
             ], tmp)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("no manifest locator resolved", r.stderr)
+
+
+# --------------------------------------------------------------------------- #
+class UnknownKeyTests(unittest.TestCase):
+    """A key the schema does not define is a validation error, not ignored."""
+
+    BASE = textwrap.dedent("""\
+        repos:
+          site:
+            path: ../site
+        facts:
+          - name: price
+            type: integer
+            monotonic: true
+            note: n
+            freshness:
+              owner: docs
+              max_age_days: 30
+            canonical:
+              file: a.md
+              pattern: 'Price: (\\d+)'
+            guard:
+              anchors:
+                - price
+              superseded:
+                - '3'
+              restated: true
+              also_current:
+                - '4'
+              paths:
+                - '*.md'
+              exempt:
+                - old.md
+            copies:
+              - file: b.md
+                pattern: 'Only (\\d+)'
+                relation: floor
+                max_gap_pct: 10
+                note: n
+              - repo: site
+                file: c.md
+                json: price
+        """)
+
+    def errors(self, text):
+        return sc.validate_manifest(sc.parse_manifest(text))
+
+    def test_every_schema_key_is_accepted(self):
+        self.assertEqual(self.errors(self.BASE), [])
+
+    def test_misspelled_keys_are_reported_with_line_and_hint(self):
+        cases = (
+            ("repos:\n", "repoz:\n", 1,
+             "manifest: unknown key 'repoz' (did you mean 'repos'?)"),
+            ("    path: ../site", "    paht: ../site", 3,
+             "repos.site: unknown key 'paht' (did you mean 'path'?)"),
+            ("    monotonic: true", "    monotnic: true", 7,
+             "price: unknown key 'monotnic' (did you mean 'monotonic'?)"),
+            ("    freshness:", "    freshnes:", 9,
+             "price: unknown key 'freshnes' (did you mean 'freshness'?)"),
+            ("      owner: docs", "      onwer: docs", 10,
+             "price.freshness: unknown key 'onwer' (did you mean 'owner'?)"),
+            ("      file: a.md", "      file: a.md\n      notes: x", 14,
+             "price.canonical: unknown key 'notes'"),
+            ("      restated: true", "      restate: true", 20,
+             "price.guard: unknown key 'restate' (did you mean "
+             "'restated'?)"),
+            ("        relation: floor", "        relaton: floor", 30,
+             "price.copies[0]: unknown key 'relaton' (did you mean "
+             "'relation'?)"),
+        )
+        for old, new, line, msg in cases:
+            with self.subTest(new=new):
+                text = self.BASE.replace(old, new, 1)
+                self.assertNotEqual(text, self.BASE)
+                errs = [e for e in self.errors(text) if "unknown key" in e]
+                self.assertEqual(len(errs), 1, errs)
+                self.assertTrue(errs[0].startswith(f"line {line}: {msg}"),
+                                errs[0])
+
+    def test_validate_cli_exits_2_on_unknown_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = os.path.join(tmp, "good.yaml")
+            bad = os.path.join(tmp, "bad.yaml")
+            write(good, self.BASE)
+            write(bad, self.BASE.replace("    guard:", "    gaurd:"))
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch("sys.stdout", out), \
+                    unittest.mock.patch("sys.stderr", err):
+                self.assertEqual(sc.main(["validate", "-f", good]), 0)
+                self.assertEqual(sc.main(["validate", "-f", bad]), 2)
+                self.assertEqual(sc.main(["check", "-f", bad]), 2)
+            self.assertIn("price: unknown key 'gaurd' (did you mean "
+                          "'guard'?)", err.getvalue())
+
+    def test_key_sets_match_the_json_schema(self):
+        with open(os.path.join(os.path.dirname(HERE), "schema",
+                               "ssot.schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        defs = schema["definitions"]
+        for name, props, keys in (
+                ("manifest", schema["properties"], sc.MANIFEST_KEYS),
+                ("repo", schema["properties"]["repos"]
+                 ["additionalProperties"]["properties"], sc.REPO_KEYS),
+                ("fact", defs["fact"]["properties"], sc.FACT_KEYS),
+                ("freshness", defs["fact"]["properties"]["freshness"]
+                 ["properties"], sc.FRESHNESS_KEYS),
+                ("locator", defs["locator"]["properties"], sc.LOCATOR_KEYS),
+                ("copy", defs["copy"]["properties"], sc.COPY_KEYS),
+                ("guard", defs["guard"]["properties"], sc.GUARD_KEYS)):
+            with self.subTest(name=name):
+                self.assertEqual(set(props), keys)
 
 
 if __name__ == "__main__":

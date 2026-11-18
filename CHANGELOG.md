@@ -33,6 +33,12 @@ The project is no longer in maintenance mode; new features are being added.
   canonical and, with `max_gap_pct`, within that percentage of it. Floors may
   use `K`/`M`/`B` suffixes. Reported as **DRIFTED (floor overstates)** or
   **DRIFTED (floor lagging)**.
+- **`fix` subcommand.** Rewrites drifted local copies with their canonical
+  value, written in the copy's format (separators, currency symbol, decimals,
+  `v` prefix, trailing `+`). Prints a diff unless `--write`, then re-checks.
+  Refuses, with a reason, copies in other repos, floors, rounded and JSON
+  copies, dates, canonical suspects, and ambiguous or overlapping matches.
+  The only command that edits files.
 - **`fleet` subcommand.** Checks several repos, each with its own manifest and
   root, and gives one report and one exit code (`2` for any invalid
   manifest, `1` for any problems or missing repo directory, else `0`). Repos
@@ -48,6 +54,21 @@ The project is no longer in maintenance mode; new features are being added.
 - Automatic releases: merging a version bump to `main` tags `vX.Y.Z` and
   publishes the GitHub release from its changelog section
   (`.github/workflows/release.yml`, decisions in `scripts/release_meta.py`).
+
+### Fixed
+
+- **Cross-repo reads ignore the sibling repo's config-driven commands.** git
+  runs with the system config off, fsmonitor, hooks and automatic maintenance
+  disabled, and the repo's filter and diff drivers blanked. A checkout whose only
+  changes are to filtered files is labelled "possibly dirty".
+- **Copy globs don't follow a symlink out of the repo.** Such a match is a
+  stale manifest entry. `fix` and `discover` skip it, and in-repo symlinks
+  still work.
+- **`discover` no longer stalls on long digit/comma runs or long whitespace
+  runs.** A 20 KB `data-points="1,1,1,…"` attribute took about 30 s, and a unit
+  noun followed by 20 K spaces took about 2 s; both now finish in milliseconds.
+  A count now starts only at the head of a digit run, so a mid-token tail such
+  as the `000 users` in `a1,000 users` is no longer proposed (#25).
 
 ## [0.1.4] — 2026-11-16
 
