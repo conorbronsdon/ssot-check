@@ -263,6 +263,7 @@ GitHub Action.
   detection, exit codes, discover heuristics) with fixtures.
 - `.github/workflows/test.yml` — CI running the suite on push and PR.
 
+[0.2.0]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.2.0
 [0.1.4]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.4
 [0.1.3]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.3
 [0.1.2]: https://github.com/conorbronsdon/ssot-check/releases/tag/v0.1.2
