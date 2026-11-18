@@ -2802,7 +2802,9 @@ def cmd_fleet(args):
     except ManifestError as exc:
         return _fail_config(str(exc))
     result = fleet(entries, fetch=args.fetch, repo_overrides=overrides)
-    if overrides and not any(r["status"] == "config_error"
+    # A repo that could not be read (missing directory, invalid manifest) may
+    # be the one that declares the name; report that failure, not "unknown".
+    if overrides and not any(r["status"] in ("config_error", "repo_missing")
                              for r in result["repos"]):
         declared = set()
         for row in result["repos"]:
