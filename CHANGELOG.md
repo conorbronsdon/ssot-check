@@ -6,6 +6,16 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+## [0.3.1] — 2026-11-24
+
+### Security
+
+- `fix --write` no longer rewrites a local copy whose path is a symlink to a
+  file outside the repo. Glob matches were already resolved and kept inside the
+  root, but a literal copy path was written through the symlink. Such a copy is
+  now refused as **resolves outside the repo (symlink)**, and the file it
+  points to is left alone.
+
 ## [0.3.0] — 2026-11-24
 
 ### Added

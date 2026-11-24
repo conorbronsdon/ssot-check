@@ -94,6 +94,38 @@ class FixTests(unittest.TestCase):
         m = sc.load_manifest(self.mpath)
         self.assertEqual(sc.check(self.root, m, env={})["exit_code"], 0)
 
+    def test_symlink_out_of_the_repo_is_refused_and_left_alone(self):
+        # A literal copy path inside the repo that is a symlink to a file
+        # outside it: fix must not write through it.
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "kit.md")
+            write(outside, "Join 1,100 readers today.\n")
+            write(self.mpath, textwrap.dedent(BASE))
+            write(os.path.join(self.root, "owner.md"), "Subscribers: 1,268\n")
+            try:
+                os.symlink(outside, os.path.join(self.root, "kit.md"))
+            except (OSError, NotImplementedError):  # pragma: no cover
+                self.skipTest("symlinks unavailable")
+            code, out = self.run_fix("--write")
+            self.assertEqual(code, 1, out)
+            self.assertIn("resolves outside the repo (symlink)", out)
+            self.assertEqual(read(outside), "Join 1,100 readers today.\n")
+
+    def test_symlink_inside_the_repo_is_still_fixed(self):
+        # Must-not-fire complement: a symlink to a file inside the repo is
+        # an ordinary local copy and is rewritten.
+        write(self.mpath, textwrap.dedent(BASE))
+        write(os.path.join(self.root, "owner.md"), "Subscribers: 1,268\n")
+        target = os.path.join(self.root, "docs", "kit.md")
+        write(target, "Join 1,100 readers today.\n")
+        try:
+            os.symlink(target, os.path.join(self.root, "kit.md"))
+        except (OSError, NotImplementedError):  # pragma: no cover
+            self.skipTest("symlinks unavailable")
+        code, out = self.run_fix("--write")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(read(target), "Join 1,268 readers today.\n")
+
     def test_in_sync_is_nothing_to_fix(self):
         self.setup_repo(kit="Join 1,268 readers today.\n")
         code, out = self.run_fix("--write")

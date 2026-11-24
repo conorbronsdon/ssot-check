@@ -1,6 +1,6 @@
 {
   "name": "ssot-check",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Find duplicated facts and report documentation drift against a curated source-of-truth manifest.",
   "author": {
     "name": "Conor Bronsdon",

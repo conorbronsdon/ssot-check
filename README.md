@@ -580,7 +580,7 @@ repository's `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/conorbronsdon/ssot-check
-    rev: v0.3.0
+    rev: v0.3.1
     hooks:
       - id: ssot-check            # check, on every commit
       - id: ssot-check-validate   # validate, when .ssot.yaml changes
@@ -615,7 +615,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: conorbronsdon/ssot-check@v0.3.0
+      - uses: conorbronsdon/ssot-check@v0.3.1
         with:
           manifest: .ssot.yaml   # optional (default)
           discover: warn         # optional; off (default) or warn
