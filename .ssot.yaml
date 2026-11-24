@@ -20,5 +20,6 @@ facts:
         pattern: '"version"\s*:\s*"([^"]+)"'
       - file: README.md
         pattern: 'uses:\s*conorbronsdon/ssot-check@(v[0-9]+\.[0-9]+\.[0-9]+)'
+      # Anchored to the file start so only the newest heading can match.
       - file: CHANGELOG.md
-        pattern: '## \[([0-9]+\.[0-9]+\.[0-9]+)\]'
+        pattern: '\A[\s\S]*?\n## \[([0-9]+\.[0-9]+\.[0-9]+)\]'

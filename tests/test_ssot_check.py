@@ -1386,6 +1386,65 @@ class CLIExitCodeTests(unittest.TestCase):
             rv = self._run(["validate"], tmp)
             self.assertEqual(rv.returncode, 0)
 
+    def test_ambiguous_locators_are_counted_shown_and_fail_strict(self):
+        # A pattern that matches twice reads its first match. The note used to
+        # be counted only for a canonical and never printed for a copy, so a
+        # second matching line could take a locator over with no signal.
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "index.md"), "Total Episodes: 62\n")
+            write(os.path.join(tmp, "kit.md"), "62 episodes\n")
+            write(os.path.join(tmp, ".ssot.yaml"), textwrap.dedent("""\
+                facts:
+                  - name: episode-count
+                    type: integer
+                    canonical:
+                      file: index.md
+                      pattern: 'Total Episodes: (\\d+)'
+                    copies:
+                      - file: kit.md
+                        pattern: '(\\d+) episodes'
+                """))
+            # Must-not-fire: unique matches are clean in both modes.
+            for args in (["check"], ["check", "--strict"]):
+                r = self._run(args, tmp)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("AMBIGUOUS", r.stdout)
+
+            # Copy side: counted, printed, advisory by default, fails --strict.
+            write(os.path.join(tmp, "kit.md"), "62 episodes\nwas 40 episodes\n")
+            r = self._run(["check"], tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("AMBIGUOUS LOCATORS (1, advisory; --strict fails)",
+                          r.stdout)
+            self.assertIn("kit.md:1: pattern matched 2x; used first", r.stdout)
+            self.assertIn("all in sync, 1 ambiguous.", r.stdout)
+            rj = json.loads(self._run(["check", "--json"], tmp).stdout)
+            self.assertEqual(rj["summary"]["warnings"], 1)
+            self.assertEqual(rj["summary"]["problems"], 0)
+            self.assertFalse(rj["strict"])
+            rs = self._run(["check", "--strict", "--json"], tmp)
+            self.assertEqual(rs.returncode, 1, rs.stdout + rs.stderr)
+            rs = json.loads(rs.stdout)
+            self.assertEqual(rs["summary"]["problems"], 1)
+            self.assertTrue(rs["strict"])
+
+            # Canonical side counts too.
+            write(os.path.join(tmp, "kit.md"), "62 episodes\n")
+            write(os.path.join(tmp, "index.md"),
+                  "Total Episodes: 62\nTotal Episodes: 61 (last year)\n")
+            rc = self._run(["check", "--strict"], tmp)
+            self.assertEqual(rc.returncode, 1, rc.stdout + rc.stderr)
+            self.assertIn("index.md:1: pattern matched 2x", rc.stdout)
+
+    def test_action_passes_strict_through(self):
+        with open(os.path.join(os.path.dirname(HERE), "action.yml"),
+                  encoding="utf-8") as fh:
+            action = fh.read()
+        self.assertIn("  strict:\n", action)
+        self.assertIn("SSOT_INPUT_STRICT: ${{ inputs.strict }}", action)
+        self.assertIn('if [ "$SSOT_INPUT_STRICT" = "true" ]; then '
+                      'ARGS+=(--strict); fi', action)
+
     def test_global_options_reach_top_level_parser(self):
         # Regression: the default-subcommand shim used to prepend `check` to
         # `--version`/`-h`, routing them into the check subparser (exit 2).

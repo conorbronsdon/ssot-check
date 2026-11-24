@@ -25,6 +25,12 @@ inputs:
     description: "Emit machine-readable JSON instead of the text report."
     required: false
     default: "false"
+  strict:
+    description: >-
+      Fail when a locator pattern matches more than once (an ambiguous
+      locator). Without it, ambiguity is reported but does not fail the step.
+    required: false
+    default: "false"
   discover:
     description: >-
       Optional manifest-aware discovery after a successful check. Set to
@@ -45,6 +51,7 @@ runs:
         SSOT_INPUT_ROOT: ${{ inputs.root }}
         SSOT_INPUT_FETCH: ${{ inputs.fetch }}
         SSOT_INPUT_JSON: ${{ inputs.json }}
+        SSOT_INPUT_STRICT: ${{ inputs.strict }}
         SSOT_INPUT_DISCOVER: ${{ inputs.discover }}
       run: |
         CLI="${GITHUB_ACTION_PATH}/ssot_check.py"
@@ -66,6 +73,7 @@ runs:
         if [ -n "$SSOT_INPUT_ROOT" ]; then ARGS+=(--root "$SSOT_INPUT_ROOT"); fi
         if [ "$SSOT_INPUT_FETCH" = "true" ]; then ARGS+=(--fetch); fi
         if [ "$SSOT_INPUT_JSON" = "true" ]; then ARGS+=(--json); fi
+        if [ "$SSOT_INPUT_STRICT" = "true" ]; then ARGS+=(--strict); fi
         echo "Running: python3 ssot_check.py ${ARGS[*]}"
         python3 "$CLI" "${ARGS[@]}"
         # ssot_check.py exits 1 on drift and 2 on manifest error; either fails

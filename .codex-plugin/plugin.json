@@ -1,6 +1,6 @@
 {
   "name": "ssot-check",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Find duplicated facts and report documentation drift.",
   "author": {
     "name": "Conor Bronsdon",

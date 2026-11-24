@@ -6,6 +6,23 @@ All notable changes to ssot-check are documented here. The format follows
 
 ## Unreleased
 
+## [0.3.0] — 2026-11-24
+
+### Added
+
+- **`check --strict`** (and the Action's `strict` input) exits `1` when a
+  locator's pattern matches more than once. `check` reads the first match, so
+  a later matching line can take a locator over; strict mode makes that a
+  failure instead of a note.
+
+### Fixed
+
+- An ambiguous copy locator is now counted in `summary.warnings` and shown in
+  the text report under **AMBIGUOUS LOCATORS**, with the summary line ending
+  `N ambiguous`. Before, only a canonical's ambiguity was counted, and neither
+  appeared in the text report, so the README's statement that `check` reports
+  an ambiguous pattern held only for `--json` canonicals.
+
 ## [0.2.0] — 2026-11-18
 
 The project is no longer in maintenance mode; new features are being added.

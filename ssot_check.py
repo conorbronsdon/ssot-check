@@ -31,7 +31,7 @@ import sys
 from datetime import date, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
@@ -1460,7 +1460,7 @@ def scan_guard(root, fact, guard, current_values, allowed, ignore_paths,
 # check
 # --------------------------------------------------------------------------- #
 def check(root, manifest, fetch=False, today=None, repo_overrides=None,
-          env=None, manifest_path=None):
+          env=None, manifest_path=None, strict=False):
     """Run a full check. Returns a result dict (also drives --json)."""
     ignore_paths = manifest.get("ignore_paths") or []
     repos = resolve_repos(root, manifest, repo_overrides, env)
@@ -1588,6 +1588,8 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
                 res = _check_one_copy(root, concrete, cp, cval, ftype,
                                       monotonic, fetch, repos)
                 fr["copies"].append(res)
+                if res.get("warning"):
+                    counts["warnings"] += 1
                 st = res["status"]
                 counts[st] = counts.get(st, 0) + 1
                 if st != "in_sync":
@@ -1607,6 +1609,11 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
                 counts["stale_entry"] + counts["unverified"] +
                 counts["freshness_stale"] + counts["repo_missing"] +
                 counts["stale_value"] + counts["restated"])
+    # An ambiguous locator (a pattern matching more than once) reads its first
+    # match, so a later matching line can take it over silently. Strict mode
+    # makes that a failure instead of a note.
+    if strict:
+        problems += counts["warnings"]
     exit_code = 1 if problems else 0
     return {
         "version": __version__,
@@ -1620,6 +1627,7 @@ def check(root, manifest, fetch=False, today=None, repo_overrides=None,
             **counts,
             "problems": problems,
         },
+        "strict": bool(strict),
         "exit_code": exit_code,
     }
 
@@ -2397,6 +2405,20 @@ def render_check(result):
             _print(f"      {g['text']}")
         _print("")
 
+    ambiguous = [(f["name"], side) for f in result["facts"]
+                 for side in [f["canonical"], *f["copies"]]
+                 if side.get("warning")]
+    if ambiguous:
+        mode = ("fails under --strict" if result.get("strict")
+                else "advisory; --strict fails")
+        _print(f"AMBIGUOUS LOCATORS ({len(ambiguous)}, {mode}) — the pattern "
+               f"matched more than once and the first match was used:")
+        for name, side in ambiguous:
+            _print(f"  - {name} — {side['file']}:{side.get('line')}: "
+                   f"{side['warning']}")
+        _print("      fix: anchor the pattern so it matches exactly once")
+        _print("")
+
     fresh_stale = [f for f in result["facts"]
                    if f.get("freshness", {}).get("stale")]
     if fresh_stale:
@@ -2429,6 +2451,8 @@ def render_check(result):
             parts.append(f"{n} stale value{'' if n == 1 else 's'}")
         if s.get("restated"):
             parts.append(f"{s['restated']} restated")
+    if s.get("warnings"):
+        parts.append(f"{s['warnings']} ambiguous")
     _print(", ".join(parts) + ".")
 
 
@@ -2636,7 +2660,8 @@ def cmd_check(args):
     except ManifestError as exc:
         return _fail_config(str(exc))
     result = check(root, manifest, fetch=args.fetch,
-                   repo_overrides=overrides, manifest_path=args.manifest)
+                   repo_overrides=overrides, manifest_path=args.manifest,
+                   strict=args.strict)
     if args.json:
         print(json.dumps(result, indent=2))
     else:
@@ -3193,6 +3218,9 @@ def build_parser():
     c = sub.add_parser("check", help="verify copies against canonicals")
     add_common(c)
     c.add_argument("--json", action="store_true", help="machine-readable output")
+    c.add_argument("--strict", action="store_true",
+                   help="exit 1 when a pattern matches more than once "
+                        "(an ambiguous locator) instead of only reporting it")
     _add_fetch(c)
     _add_repo(c)
     c.set_defaults(func=cmd_check)
