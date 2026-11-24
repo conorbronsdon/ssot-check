@@ -43,3 +43,4 @@ jobs:
         with:
           manifest: .ssot.yaml
           discover: warn
+          strict: true

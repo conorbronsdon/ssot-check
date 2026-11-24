@@ -73,6 +73,7 @@ Common options (`check`, `validate`, `explain`):
 | `--json` | Machine-readable output (`check`, `discover`, `explain`, `fleet`). |
 | `--fetch` | For cross-repo copies, run `git fetch` in the sibling repo and compare against its remote-tracking ref. Makes a network call and updates that repo's remote-tracking refs and `FETCH_HEAD`; never pulls, rebases, or touches its working tree. Off by default. `check`/`explain`/`fleet`. |
 | `--repo NAME=PATH` | Where a [named repo](#named-repos) is checked out on this machine. Repeatable. `check`/`explain`/`fleet`. |
+| `--strict` | Exit `1` when a locator's pattern matches more than once. Without it, `check` lists the locator under **AMBIGUOUS LOCATORS** and counts it in `summary.warnings`, but does not fail. `check`. |
 
 `discover` takes `--root DIR`, repeatable `--ignore GLOB`, and `--json`. With
 `--manifest PATH --untracked-only`, it suppresses occurrences already covered
@@ -96,8 +97,8 @@ build. `discover` itself exits `2` on a configuration error.
 
 Exit codes (`check`): `0` in sync · `1` drift, canonical moved, stale entry,
 unverified copy, stale-past-freshness canonical, repo not found, stale value,
-or restated value · `2` manifest missing, unparseable, or schema-invalid, or a
-malformed `--repo`.
+or restated value, and under `--strict` an ambiguous locator · `2` manifest
+missing, unparseable, or schema-invalid, or a malformed `--repo`.
 
 Exit codes (`discover`): `0` always, including when candidates are reported ·
 `2` an explicitly passed `--manifest` that is missing, unparseable, or
@@ -579,7 +580,7 @@ repository's `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/conorbronsdon/ssot-check
-    rev: v0.2.0
+    rev: v0.3.0
     hooks:
       - id: ssot-check            # check, on every commit
       - id: ssot-check-validate   # validate, when .ssot.yaml changes
@@ -614,10 +615,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: conorbronsdon/ssot-check@v0.2.0
+      - uses: conorbronsdon/ssot-check@v0.3.0
         with:
           manifest: .ssot.yaml   # optional (default)
           discover: warn         # optional; off (default) or warn
+          strict: true           # optional; fail on ambiguous locators
 ```
 
 The Action always runs deterministic `check` first and fails on drift or an
