@@ -2,7 +2,7 @@
 # In a repository with a .ssot.yaml, add to .pre-commit-config.yaml:
 #
 #   - repo: https://github.com/conorbronsdon/ssot-check
-#     rev: v0.3.0
+#     rev: v0.3.1
 #     hooks:
 #       - id: ssot-check
 #

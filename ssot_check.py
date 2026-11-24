@@ -31,7 +31,7 @@ import sys
 from datetime import date, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 VALID_TYPES = {"string", "integer", "currency", "semver", "date"}
 VALID_ROUNDING = {"floor-10", "floor-100", "floor-1000", "floor-1000-as-K"}
@@ -2953,6 +2953,12 @@ def plan_fixes(root, manifest, result):
                     reason = f"type {ftype} is not rewritten"
                 elif cval is None:
                     reason = "no canonical value"
+                elif not _inside(os.path.realpath(_resolve(root, rel)),
+                                 os.path.realpath(root)):
+                    # A literal copy path can be a symlink out of the repo;
+                    # writing through it would edit a file fix must not touch.
+                    reason = "resolves outside the repo (symlink); not " \
+                             "rewritten"
                 if reason:
                     refusals.append((name, where, reason))
                     continue
